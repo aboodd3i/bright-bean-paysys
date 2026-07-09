@@ -1,0 +1,45 @@
+Daily Analytics Report - {{ report_date|date:"N j, Y" }}
+Past {{ days }} days
+
+{% for account_data in accounts %}
+=== {{ account_data.account_name }} ({{ account_data.platform }}) ===
+
+{% if account_data.follower_growth %}
+Follower Growth: {{ account_data.follower_growth.value|floatformat:0 }} ({{ account_data.follower_growth.delta }}% vs previous period)
+{% endif %}
+
+{% if account_data.hero_cards %}
+Account Insights:
+{% for card in account_data.hero_cards %}
+  - {{ card.label }}: {% if card.derived.kind == 'percent' %}{{ card.derived.value|floatformat:1 }}%{% elif card.derived.kind == 'minutes' %}{{ card.derived.value|floatformat:0 }} min{% else %}{{ card.derived.value|floatformat:0 }}{% endif %} ({{ card.derived.delta }}%)
+{% endfor %}
+{% endif %}
+
+{% if account_data.engagement %}
+Engagement Rate: {{ account_data.engagement.rate.value|floatformat:2 }}% ({{ account_data.engagement.rate.delta }}%)
+{% for part in account_data.engagement.parts %}
+  - {{ part.label }}: {{ part.derived.value|floatformat:0 }}
+{% endfor %}
+{% endif %}
+
+{% if account_data.top_posts %}
+Top Performing Posts:
+{% for post in account_data.top_posts %}
+  - {{ post.caption|truncatewords:12 }} ({{ post.date }})
+{% endfor %}
+{% endif %}
+
+{% if not forloop.last %}
+
+---
+{% endif %}
+{% endfor %}
+
+{% if not accounts %}
+No connected social accounts with analytics data were found.
+{% endif %}
+
+View full dashboard: {{ app_url }}
+
+---
+You're receiving this daily analytics report from Brightbean Studio.

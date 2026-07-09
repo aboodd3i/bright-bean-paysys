@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Analytics Report</title>
+<!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
+<style>
+  body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+  table, td { mso-table-lspace: 0pt; mso-table-lspace: 0pt; }
+  img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+  body { margin: 0; padding: 0; width: 100% !important; }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:#FAFAF9;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1C1917;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FAFAF9;">
+<tr><td align="center" style="padding:40px 20px;">
+
+  <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#FFFFFF;border-radius:12px;border:1px solid #E7E5E4;">
+
+    <!-- Header / Brand bar -->
+    <tr>
+      <td style="padding:28px 32px 20px;border-bottom:1px solid #F5F5F4;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="width:28px;height:28px;background-color:#F97316;border-radius:6px;text-align:center;vertical-align:middle;color:#FFFFFF;font-weight:700;font-size:13px;">B</td>
+            <td style="padding-left:10px;font-weight:700;font-size:15px;color:#1C1917;letter-spacing:-0.01em;">Brightbean Studio</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <!-- Title -->
+    <tr>
+      <td style="padding:28px 32px 8px;">
+        <h1 style="margin:0;font-size:22px;font-weight:700;color:#1C1917;line-height:1.3;">Daily Analytics Report</h1>
+        <p style="margin:8px 0 0;font-size:13px;color:#A8A29E;">{{ report_date|date:"l, N j, Y" }} &mdash; Past {{ days }} days</p>
+      </td>
+    </tr>
+
+    {% for account_data in accounts %}
+    <!-- Account section -->
+    <tr>
+      <td style="padding:24px 32px 0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FAFAF9;border-radius:10px;border:1px solid #F5F5F4;">
+          <tr>
+            <td style="padding:16px 20px;">
+              <p style="margin:0;font-size:16px;font-weight:700;color:#1C1917;">
+                {{ account_data.account_name }}
+                <span style="font-size:12px;font-weight:400;color:#A8A29E;text-transform:capitalize;"> &middot; {{ account_data.platform }}</span>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <!-- Follower Growth -->
+    {% if account_data.follower_growth %}
+    <tr>
+      <td style="padding:16px 32px 0;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#78716C;text-transform:uppercase;letter-spacing:0.05em;">Follower Growth</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="padding:12px 16px;background-color:#FFFFFF;border:1px solid #E7E5E4;border-radius:8px;">
+              <p style="margin:0;font-size:28px;font-weight:700;color:#1C1917;">{{ account_data.follower_growth.value|floatformat:0 }}</p>
+              <p style="margin:4px 0 0;font-size:12px;color:#78716C;">
+                {% if account_data.follower_growth.delta > 0 %}<span style="color:#16A34A;">&uarr; {{ account_data.follower_growth.delta }}%</span>{% elif account_data.follower_growth.delta < 0 %}<span style="color:#DC2626;">&darr; {{ account_data.follower_growth.delta|floatformat:1 }}%</span>{% else %}<span style="color:#A8A29E;">&mdash; 0%</span>{% endif %}
+                vs previous period
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- Hero Cards (Account-level insights) -->
+    {% if account_data.hero_cards %}
+    <tr>
+      <td style="padding:16px 32px 0;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#78716C;text-transform:uppercase;letter-spacing:0.05em;">Account Insights</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          {% for card in account_data.hero_cards %}
+          {% if forloop.counter0|divisibleby:2 %}<tr>{% endif %}
+          <td style="width:50%;padding:6px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFFFFF;border:1px solid #E7E5E4;border-radius:8px;">
+              <tr>
+                <td style="padding:12px 14px;">
+                  <p style="margin:0 0 2px;font-size:11px;color:#A8A29E;">{{ card.label }}</p>
+                  <p style="margin:0;font-size:20px;font-weight:700;color:#1C1917;">
+                    {% if card.derived.kind == 'percent' %}{{ card.derived.value|floatformat:1 }}%{% elif card.derived.kind == 'minutes' %}{{ card.derived.value|floatformat:0 }} min{% else %}{{ card.derived.value|floatformat:0 }}{% endif %}
+                  </p>
+                  <p style="margin:2px 0 0;font-size:11px;color:#78716C;">
+                    {% if card.derived.delta > 0 %}<span style="color:#16A34A;">&uarr; {{ card.derived.delta }}%</span>{% elif card.derived.delta < 0 %}<span style="color:#DC2626;">&darr; {{ card.derived.delta|floatformat:1 }}%</span>{% else %}<span style="color:#A8A29E;">&mdash;</span>{% endif %}
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+          {% if forloop.counter|divisibleby:2 or forloop.last %}</tr>{% endif %}
+          {% endfor %}
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- Engagement Card -->
+    {% if account_data.engagement %}
+    <tr>
+      <td style="padding:16px 32px 0;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#78716C;text-transform:uppercase;letter-spacing:0.05em;">Engagement</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="padding:12px 16px;background-color:#FFFFFF;border:1px solid #E7E5E4;border-radius:8px;">
+              <p style="margin:0;font-size:24px;font-weight:700;color:#1C1917;">{{ account_data.engagement.rate.value|floatformat:2 }}%</p>
+              <p style="margin:4px 0 0;font-size:12px;color:#78716C;">
+                {% if account_data.engagement.rate.delta > 0 %}<span style="color:#16A34A;">&uarr; {{ account_data.engagement.rate.delta }}%</span>{% elif account_data.engagement.rate.delta < 0 %}<span style="color:#DC2626;">&darr; {{ account_data.engagement.rate.delta|floatformat:1 }}%</span>{% else %}<span style="color:#A8A29E;">&mdash;</span>{% endif %}
+                engagement rate
+              </p>
+              {% if account_data.engagement.parts %}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;">
+                <tr>
+                  {% for part in account_data.engagement.parts %}
+                  <td style="padding:4px;text-align:center;">
+                    <p style="margin:0;font-size:11px;color:#A8A29E;">{{ part.label }}</p>
+                    <p style="margin:0;font-size:14px;font-weight:600;color:#1C1917;">{{ part.derived.value|floatformat:0 }}</p>
+                  </td>
+                  {% endfor %}
+                </tr>
+              </table>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- Top Performing Posts -->
+    {% if account_data.top_posts %}
+    <tr>
+      <td style="padding:16px 32px 0;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#78716C;text-transform:uppercase;letter-spacing:0.05em;">Top Performing Posts</p>
+        {% for post in account_data.top_posts %}
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;background-color:#FFFFFF;border:1px solid #E7E5E4;border-radius:8px;">
+          <tr>
+            <td style="padding:12px 16px;">
+              <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#1C1917;">{{ post.caption|truncatewords:12 }}</p>
+              <p style="margin:0 0 8px;font-size:11px;color:#A8A29E;">{{ post.date }} &middot; {{ post.media_kind|default:"post" }}</p>
+              {% if post.stats %}
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  {% for stat in post.stats %}
+                  <td style="padding-right:16px;">
+                    <p style="margin:0;font-size:10px;color:#A8A29E;">{{ stat.label }}</p>
+                    <p style="margin:0;font-size:13px;font-weight:600;color:#1C1917;">{{ stat.value|floatformat:0 }}</p>
+                  </td>
+                  {% endfor %}
+                </tr>
+              </table>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- All Posts Table -->
+    {% if account_data.all_posts %}
+    <tr>
+      <td style="padding:16px 32px 0;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#78716C;text-transform:uppercase;letter-spacing:0.05em;">All Posts ({{ account_data.all_posts|length }})</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFFFFF;border:1px solid #E7E5E4;border-radius:8px;overflow:hidden;">
+          <tr style="background-color:#FAFAF9;">
+            <td style="padding:8px 12px;font-size:11px;font-weight:600;color:#78716C;border-bottom:1px solid #E7E5E4;">Post</td>
+            <td style="padding:8px 12px;font-size:11px;font-weight:600;color:#78716C;border-bottom:1px solid #E7E5E4;">Date</td>
+            {% for ml in account_data.metric_labels %}
+            <td style="padding:8px 12px;font-size:11px;font-weight:600;color:#78716C;border-bottom:1px solid #E7E5E4;white-space:nowrap;">{{ ml.label }}</td>
+            {% endfor %}
+          </tr>
+          {% for row in account_data.all_posts %}
+          <tr>
+            <td style="padding:8px 12px;font-size:12px;color:#1C1917;border-bottom:1px solid #F5F5F4;">{{ row.caption|truncatewords:6 }}</td>
+            <td style="padding:8px 12px;font-size:11px;color:#78716C;border-bottom:1px solid #F5F5F4;white-space:nowrap;">{{ row.date }}</td>
+            {% for stat in row.stats %}
+            <td style="padding:8px 12px;font-size:12px;color:#1C1917;border-bottom:1px solid #F5F5F4;">{{ stat.value|floatformat:0 }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+
+    {% if not forloop.last %}
+    <!-- Separator between accounts -->
+    <tr><td style="padding:16px 32px;"><hr style="border:none;border-top:1px solid #F5F5F4;margin:0;" /></td></tr>
+    {% endif %}
+    {% endfor %}
+
+    <!-- Empty state -->
+    {% if not accounts %}
+    <tr>
+      <td style="padding:28px 32px;">
+        <p style="margin:0;font-size:15px;color:#78716C;line-height:1.6;">No connected social accounts with analytics data were found. Connect an account and wait for the analytics sync to populate snapshots.</p>
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- Footer -->
+    <tr>
+      <td style="padding:24px 32px 28px;border-top:1px solid #F5F5F4;">
+        <p style="margin:0;font-size:12px;color:#A8A29E;line-height:1.6;">
+          You're receiving this daily analytics report from Brightbean Studio.<br />
+          <a href="{{ app_url }}" style="color:#F97316;text-decoration:none;">View full analytics dashboard</a>
+        </p>
+      </td>
+    </tr>
+
+  </table>
+</td></tr>
+</table>
+</body>
+</html>
