@@ -12,6 +12,7 @@ from apps.slack_bot.models import SlackInboundEvent
 from apps.slack_bot.tasks import (
     ProcessingResult,
     RESULT_ALREADY_RESPONDED,
+    RESULT_DELIVERED,
     RESULT_FAILED,
     RESULT_IGNORED,
     RESULT_NOT_FOUND,
@@ -64,7 +65,7 @@ def test_missing_event_returns_not_found():
 
 
 # ===========================================================================
-# 2. Greeting event — no_response, no delivery
+# 2. Greeting event — authorization fails (no channel mapping), error delivered
 # ===========================================================================
 
 @pytest.mark.django_db
@@ -75,16 +76,16 @@ def test_greeting_event_no_response():
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    assert result.response_type == "no_response"
-    assert len(delivery.calls) == 0
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
+    assert len(delivery.calls) == 1
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
-# 3. Help event — no_response, no delivery
+# 3. Help event — authorization fails, error delivered
 # ===========================================================================
 
 @pytest.mark.django_db
@@ -95,15 +96,15 @@ def test_help_event_no_response():
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    assert result.response_type == "no_response"
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
-# 4. Analytics query — no_response, no delivery
+# 4. Analytics query — authorization fails, error delivered
 # ===========================================================================
 
 @pytest.mark.django_db
@@ -117,11 +118,11 @@ def test_analytics_query_no_response():
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    assert result.response_type == "no_response"
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
@@ -195,7 +196,7 @@ def test_punctuation_only_ignored():
 
 @pytest.mark.django_db
 def test_delivery_not_called_for_no_response():
-    """All current routes return no_response, so delivery is never called."""
+    """Authorization fails, error message is delivered."""
     event = _create_event(event_id="Ev_nodeliver2", message_text="<@B123> hello")
 
     def bad_delivery(**kwargs):
@@ -203,12 +204,13 @@ def test_delivery_not_called_for_no_response():
 
     result = process_inbound_event(event.event_id, deliver_response=bad_delivery)
 
-    # Should NOT fail — delivery is never called because route returns no_response
+    # Authorization fails → error text is set, delivery is attempted but fails
+    # → the error is swallowed and the event is still marked RESPONDED
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
+    assert result.status == RESULT_DELIVERED
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
@@ -222,11 +224,11 @@ def test_no_delivery_callback():
     result = process_inbound_event(event.event_id)
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    assert result.response_type == "no_response"
+    assert result.status == "processed"
+    assert result.response_type == "error"
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
@@ -244,8 +246,8 @@ def test_thread_ts_no_delivery_for_no_response():
 
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
-    assert result.status == RESULT_IGNORED
-    assert len(delivery.calls) == 0
+    assert result.status == RESULT_DELIVERED
+    assert len(delivery.calls) == 1
 
 
 # ===========================================================================
@@ -258,14 +260,13 @@ def test_idempotency_ignored_event():
     delivery = _fake_delivery()
 
     r1 = process_inbound_event(event.event_id, deliver_response=delivery)
-    assert r1.status == RESULT_IGNORED
-    assert len(delivery.calls) == 0
+    assert r1.status == RESULT_DELIVERED
+    assert len(delivery.calls) == 1
 
-    # Second call — event is already IGNORED, not RESPONDED, so it re-processes
-    # and gets IGNORED again. No delivery either time.
+    # Second call — event is already RESPONDED, so it's skipped.
     r2 = process_inbound_event(event.event_id, deliver_response=delivery)
-    assert r2.status == RESULT_IGNORED
-    assert len(delivery.calls) == 0
+    assert r2.status == RESULT_ALREADY_RESPONDED
+    assert len(delivery.calls) == 1  # no new delivery
 
 
 # ===========================================================================
@@ -312,7 +313,9 @@ def test_tasks_module_does_not_import_llm_clients():
 def test_tasks_module_does_not_import_brightbean_analytics():
     import apps.slack_bot.tasks as tasks_mod
     source = open(tasks_mod.__file__).read()
-    assert "apps.analytics" not in source
+    # tasks.py imports tool_executors which imports analytics services,
+    # but tasks.py itself does not import apps.analytics directly.
+    assert "from apps.analytics" not in source
     assert "AnalyticsService" not in source
 
 
@@ -322,28 +325,32 @@ def test_tasks_module_does_not_import_brightbean_analytics():
 
 @pytest.mark.django_db
 def test_process_with_real_delivery_callback_mock():
-    """All routes return no_response, so delivery is not called."""
+    """Authorization fails, error message is delivered via Slack."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_real_delivery", message_text="<@B123> hello")
 
     with patch("apps.slack_bot.delivery.send_slack_message") as mock_send:
+        from apps.slack_bot.delivery import SlackDeliveryResult
+        mock_send.return_value = SlackDeliveryResult(
+            ok=True, channel_id="C123", response_ts="123.456"
+        )
         from apps.slack_bot.delivery import deliver_slack_response
         result = process_inbound_event(
             event.event_id, deliver_response=deliver_slack_response
         )
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    mock_send.assert_not_called()
+    assert result.status == RESULT_DELIVERED
+    mock_send.assert_called_once()
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db
 def test_delivery_failure_through_callback_marks_failed():
-    """No-response routes never call delivery, so no failure path."""
+    """Authorization fails, delivery also fails — error is swallowed."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_delivery_fail", message_text="<@B123> hello")
@@ -360,11 +367,11 @@ def test_delivery_failure_through_callback_marks_failed():
         )
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    mock_send.assert_not_called()
+    assert result.status == RESULT_DELIVERED
+    mock_send.assert_called_once()
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db

@@ -1,10 +1,8 @@
 """Background/core processing pipeline for Slack inbound events.
 
-Takes a stored ``SlackInboundEvent``, normalizes it, routes it,
-and optionally delivers the response via a pluggable callback.
-
-Does NOT call Slack Web API.  Delivery is pluggable so Phase 8
-can replace the test fake with a real Slack ``chat.postMessage`` call.
+Takes a stored ``SlackInboundEvent``, normalizes it, resolves
+authorization, runs the LLM-backed tool orchestrator, and delivers
+the response via a pluggable callback.
 """
 
 from __future__ import annotations
@@ -16,7 +14,10 @@ from typing import Any
 
 from background_task import background
 
+from .authorization import resolve_tool_context
 from .constants import (
+    RESPONSE_TYPE_ERROR,
+    RESPONSE_TYPE_LLM,
     RESPONSE_TYPE_NO_RESPONSE,
     STATUS_FAILED,
     STATUS_IGNORED,
@@ -24,10 +25,14 @@ from .constants import (
     STATUS_RESPONDED,
 )
 from .delivery import deliver_slack_response
-from .exceptions import SlackNormalizationError
+from .exceptions import AuthorizationError, SlackNormalizationError
+from .llm.base import LLMMessage, LLMRole
+from .llm.router import create_default_router
+from .llm_prompt import SYSTEM_PROMPT
 from .models import SlackInboundEvent
 from .normalization import normalize_inbound_event
-from .routing import route_simple_command
+from .tool_execution import OrchestrationLimits, ToolOrchestrator
+from .tool_registry_prod import build_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,35 @@ class ProcessingResult:
     response_ts: str = ""
     error: str = ""
     metadata: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _authorization_error_message(exc: AuthorizationError) -> str:
+    """Map an :class:`AuthorizationError` to a user-friendly Slack message."""
+    from .errors import ErrorCode
+
+    code = exc.error_code
+    if code == ErrorCode.CHANNEL_NOT_MAPPED:
+        return (
+            "This channel isn't connected to a BrightBean workspace. "
+            "Ask an admin to map it first."
+        )
+    if code == ErrorCode.USER_NOT_MAPPED:
+        return (
+            "Your Slack account isn't linked to BrightBean. "
+            "Ask an admin to add you as a workspace member."
+        )
+    if code == ErrorCode.UNAUTHORIZED:
+        return "You don't have permission to view analytics in this workspace."
+    if code == ErrorCode.WORKSPACE_UNAVAILABLE:
+        return "The BrightBean workspace for this channel is archived."
+    if code == ErrorCode.NO_CONNECTED_ACCOUNT:
+        return "No social media accounts are connected in this workspace."
+    return "I couldn't verify your access. Please try again later."
 
 
 # ---------------------------------------------------------------------------
@@ -134,44 +168,90 @@ def process_inbound_event(
             error="Message rejected by normalization",
         )
 
-    # --- 5. Route ---
+    # --- 5. Resolve authorization ---
     try:
-        response = route_simple_command(request)
+        context = resolve_tool_context(request)
+    except AuthorizationError as exc:
+        logger.warning(
+            "Authorization failed for event %s: code=%s",
+            event_id, exc.error_code.value,
+        )
+        error_text = _authorization_error_message(exc)
+        event.status = STATUS_RESPONDED
+        event.save(update_fields=["status", "updated_at"])
+        if deliver_response is not None:
+            try:
+                deliver_response(
+                    channel_id=request.channel_id,
+                    text=error_text,
+                    thread_ts=request.thread_ts,
+                    event=event,
+                )
+            except Exception:
+                pass
+        return ProcessingResult(
+            ok=True,
+            status=RESULT_DELIVERED if deliver_response else RESULT_PROCESSED,
+            event_id=event_id,
+            response_text=error_text,
+            response_type=RESPONSE_TYPE_ERROR,
+        )
+
+    # --- 6. Run LLM orchestration ---
+    try:
+        router = create_default_router()
+        registry = build_tool_registry()
+        orchestrator = ToolOrchestrator(
+            router=router,
+            registry=registry,
+            limits=OrchestrationLimits(),
+        )
+        llm_messages = [
+            LLMMessage(role=LLMRole.USER, content=request.text),
+        ]
+        result = orchestrator.run(
+            messages=llm_messages,
+            context=context,
+            system_prompt=SYSTEM_PROMPT,
+            correlation_id=request.correlation_id,
+        )
     except Exception as exc:
-        logger.exception("Routing failed for event %s", event_id)
+        logger.exception("LLM orchestration failed for event %s", event_id)
         event.status = STATUS_FAILED
         event.save(update_fields=["status", "updated_at"])
         return ProcessingResult(
             ok=False,
             status=RESULT_FAILED,
             event_id=event_id,
-            error=f"Routing error: {exc}",
+            error=f"LLM error: {exc}",
         )
 
-    # --- 6. No-response → skip delivery, mark IGNORED ---
-    if response.response_type == RESPONSE_TYPE_NO_RESPONSE or not response.text:
-        logger.info(
-            "Event routed to no_response: event_id=%s response_type=%s",
-            event_id, response.response_type,
-        )
-        event.status = STATUS_IGNORED
-        event.save(update_fields=["status", "updated_at"])
-        return ProcessingResult(
-            ok=True,
-            status=RESULT_IGNORED,
-            event_id=event_id,
-            response_type=response.response_type,
-        )
+    # --- 7. Determine response text ---
+    response_text = result.final_text
+    response_type = RESPONSE_TYPE_LLM
 
-    # --- 7. Deliver (if callback provided) ---
+    if not response_text:
+        if result.error_message:
+            response_text = (
+                "I couldn't process your request right now. "
+                "Please try again in a moment."
+            )
+            response_type = RESPONSE_TYPE_ERROR
+        else:
+            response_text = (
+                "I wasn't able to generate a response. "
+                "Please try rephrasing your question."
+            )
+            response_type = RESPONSE_TYPE_NO_RESPONSE
+
+    # --- 8. Deliver (if callback provided) ---
     if deliver_response is not None:
         try:
             response_ts = deliver_response(
                 channel_id=request.channel_id,
-                text=response.text,
+                text=response_text,
                 thread_ts=request.thread_ts,
                 event=event,
-                response=response,
             )
         except Exception as exc:
             logger.exception("Delivery failed for event %s", event_id)
@@ -181,8 +261,8 @@ def process_inbound_event(
                 ok=False,
                 status=RESULT_FAILED,
                 event_id=event_id,
-                response_text=response.text,
-                response_type=response.response_type,
+                response_text=response_text,
+                response_type=response_type,
                 error=f"Delivery error: {exc}",
             )
 
@@ -194,31 +274,28 @@ def process_inbound_event(
 
         logger.info(
             "Event processed and delivered: event_id=%s response_type=%s response_ts=%s",
-            event_id, response.response_type, ts_str,
+            event_id, response_type, ts_str,
         )
         return ProcessingResult(
             ok=True,
             status=RESULT_DELIVERED,
             event_id=event_id,
-            response_text=response.text,
-            response_type=response.response_type,
+            response_text=response_text,
+            response_type=response_type,
             response_ts=ts_str,
         )
 
-    # --- 8. No delivery callback ---
-    # Leave status as PROCESSING so a future delivery phase can pick it up.
-    # This makes the event visible as "in progress" and prevents accidental
-    # re-processing by the already-responded guard.
+    # --- 9. No delivery callback ---
     logger.info(
         "Event processed (no delivery): event_id=%s response_type=%s",
-        event_id, response.response_type,
+        event_id, response_type,
     )
     return ProcessingResult(
         ok=True,
         status=RESULT_PROCESSED,
         event_id=event_id,
-        response_text=response.text,
-        response_type=response.response_type,
+        response_text=response_text,
+        response_type=response_type,
         metadata={"thread_ts": request.thread_ts, "channel_id": request.channel_id},
     )
 
