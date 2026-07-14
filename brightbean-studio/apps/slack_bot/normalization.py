@@ -1,15 +1,16 @@
 """Slack message normalization.
 
 Converts a persisted ``SlackInboundEvent`` into a clean
-``SlackAnalyticsRequest`` dataclass suitable for downstream routing,
-background processing, and LLM/analytics integration.
+``SlackAnalyticsRequest`` (defined in :mod:`apps.slack_bot.contracts`)
+suitable for downstream routing, background processing, and
+LLM/analytics integration.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
+from .contracts import SlackAnalyticsRequest
 from .exceptions import SlackNormalizationError
 
 # Regex for Slack user mentions: <@U123> or <@U123|displayname>
@@ -17,19 +18,6 @@ _MENTION_RE = re.compile(r"<@[A-Z0-9]+(?:\|[^>]*)?>")
 
 # Regex for collapsing repeated whitespace
 _MULTI_WS_RE = re.compile(r"\s+")
-
-
-@dataclass(frozen=True)
-class SlackAnalyticsRequest:
-    """Normalized Slack event ready for downstream processing."""
-
-    correlation_id: str
-    event_id: str
-    team_id: str
-    channel_id: str
-    user_id: str
-    thread_ts: str
-    text: str
 
 
 def remove_bot_mentions(text: str) -> str:
@@ -88,9 +76,10 @@ def normalize_inbound_event(event) -> SlackAnalyticsRequest:
         )
 
     thread_ts = event.thread_ts or ""
+    correlation_id = event.correlation_id if event.correlation_id else event.event_id
 
     return SlackAnalyticsRequest(
-        correlation_id=event.correlation_id,
+        correlation_id=correlation_id,
         event_id=event.event_id,
         team_id=event.team_id,
         channel_id=event.channel_id,

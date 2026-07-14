@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from apps.slack_bot.normalization import SlackAnalyticsRequest
+from apps.slack_bot.contracts import SlackAnalyticsRequest
 from apps.slack_bot.routing import (
     SimpleBotResponse,
     is_greeting,

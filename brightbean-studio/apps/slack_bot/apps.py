@@ -1,3 +1,5 @@
+"""Django app config for the Slack analytics bot."""
+
 from django.apps import AppConfig
 
 

@@ -7,7 +7,6 @@ and extracts fields needed for persistence via the Phase 4 model.
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 from .constants import (
     REASON_ACCEPTED,
@@ -18,7 +17,6 @@ from .constants import (
     REASON_MISSING_REQUIRED_FIELDS,
     REASON_NOT_BOT_THREAD,
     REASON_UNSUPPORTED_TYPE,
-    REASON_URL_VERIFICATION,
     SLACK_EVENT_APP_MENTION,
     SLACK_EVENT_MESSAGE,
     SLACK_EVENT_TYPE_EVENT_CALLBACK,
@@ -56,7 +54,7 @@ def get_url_verification_challenge(payload: dict) -> str:
     return str(challenge)
 
 
-def extract_event_payload(payload: dict) -> Optional[dict]:
+def extract_event_payload(payload: dict) -> dict | None:
     """Return the inner ``event`` dict from an ``event_callback`` payload.
 
     Returns ``None`` if the payload is not an event callback or has no
@@ -138,7 +136,7 @@ def should_accept_event(
     return False, REASON_UNSUPPORTED_TYPE
 
 
-def extract_persistence_fields(payload: dict) -> Optional[dict]:
+def extract_persistence_fields(payload: dict) -> dict | None:
     """Extract fields needed for ``SlackInboundEvent`` persistence.
 
     Returns a dict with keys: ``event_id``, ``team_id``, ``channel_id``,

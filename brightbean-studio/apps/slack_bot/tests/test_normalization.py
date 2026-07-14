@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from apps.slack_bot.contracts import SlackAnalyticsRequest
 from apps.slack_bot.exceptions import SlackNormalizationError
 from apps.slack_bot.models import SlackInboundEvent
 from apps.slack_bot.normalization import (
-    SlackAnalyticsRequest,
     clean_slack_text,
     is_meaningful_message,
     normalize_inbound_event,
     remove_bot_mentions,
 )
-
 
 # ===========================================================================
 # remove_bot_mentions

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 
 from .constants import RESPONSE_TYPE_NO_RESPONSE
-from .normalization import SlackAnalyticsRequest
+from .contracts import SlackAnalyticsRequest
 
 # ---------------------------------------------------------------------------
 # Response dataclass
