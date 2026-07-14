@@ -53,6 +53,7 @@ REASON_MISSING_EVENT_ID = "missing_event_id"
 REASON_MISSING_REQUIRED_FIELDS = "missing_required_fields"
 REASON_MESSAGE_WITHOUT_THREAD = "message_without_thread"
 REASON_IGNORED_SUBTYPE = "ignored_subtype"
+REASON_NOT_BOT_THREAD = "not_bot_thread"
 
 # Supported event types for trigger filtering
 SUPPORTED_EVENT_TYPES = frozenset({

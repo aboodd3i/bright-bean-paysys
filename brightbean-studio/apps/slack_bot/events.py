@@ -16,6 +16,7 @@ from .constants import (
     REASON_MESSAGE_WITHOUT_THREAD,
     REASON_MISSING_EVENT_ID,
     REASON_MISSING_REQUIRED_FIELDS,
+    REASON_NOT_BOT_THREAD,
     REASON_UNSUPPORTED_TYPE,
     REASON_URL_VERIFICATION,
     SLACK_EVENT_APP_MENTION,
@@ -69,7 +70,10 @@ def extract_event_payload(payload: dict) -> Optional[dict]:
     return event
 
 
-def should_accept_event(payload: dict) -> tuple[bool, str]:
+def should_accept_event(
+    payload: dict,
+    bot_thread_checker: Optional[callable] = None,
+) -> tuple[bool, str]:
     """Determine whether an event callback payload should be accepted.
 
     Returns ``(True, REASON_ACCEPTED)`` for events that should be
@@ -81,9 +85,14 @@ def should_accept_event(payload: dict) -> tuple[bool, str]:
     - Event ``type`` must be in ``SUPPORTED_EVENT_TYPES``.
     - ``app_mention`` events are always accepted.
     - ``message`` events are accepted only if they have ``thread_ts``,
-      no ``bot_id``, and no ``subtype``.
+      no ``bot_id``, no ``subtype``, AND the thread belongs to a
+      previous bot response (checked via *bot_thread_checker*).
     - Bot messages (``bot_id`` present) are rejected.
     - Events with ``subtype`` are rejected.
+
+    Args:
+        bot_thread_checker: Optional callable ``(channel_id, thread_ts) -> bool``.
+            If ``None``, the default ``is_known_bot_thread`` is used.
     """
     event = extract_event_payload(payload)
     if event is None:
@@ -113,9 +122,17 @@ def should_accept_event(payload: dict) -> tuple[bool, str]:
         return True, REASON_ACCEPTED
 
     if event_type == SLACK_EVENT_MESSAGE:
-        # Message events must have thread_ts for now
-        if not event.get("thread_ts"):
+        # Message events must have thread_ts
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
             return False, REASON_MESSAGE_WITHOUT_THREAD
+
+        # Message must be in a thread that the bot started
+        checker = bot_thread_checker or is_known_bot_thread
+        channel_id = event.get("channel", "")
+        if not checker(channel_id, thread_ts):
+            return False, REASON_NOT_BOT_THREAD
+
         return True, REASON_ACCEPTED
 
     return False, REASON_UNSUPPORTED_TYPE
@@ -151,3 +168,26 @@ def extract_persistence_fields(payload: dict) -> Optional[dict]:
         "message_text": event.get("text", ""),
         "thread_ts": event.get("thread_ts") or "",
     }
+
+
+def is_known_bot_thread(channel_id: str, thread_ts: str) -> bool:
+    """Return ``True`` if *thread_ts* matches a previous bot response.
+
+    Checks whether there is a ``SlackInboundEvent`` in *channel_id*
+    whose ``response_ts`` equals *thread_ts* and whose status is
+    ``RESPONDED``.  This identifies threads that the bot itself
+    started, so that follow-up replies in those threads can be
+    accepted even without an explicit ``@bot`` mention.
+    """
+    if not channel_id or not thread_ts:
+        return False
+
+    # Local import to avoid circular dependency at module load time.
+    from .models import SlackInboundEvent
+    from .constants import STATUS_RESPONDED
+
+    return SlackInboundEvent.objects.filter(
+        channel_id=channel_id,
+        response_ts=thread_ts,
+        status=STATUS_RESPONDED,
+    ).exists()

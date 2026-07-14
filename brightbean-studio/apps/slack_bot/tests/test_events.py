@@ -185,6 +185,19 @@ def test_message_with_subtype_ignored():
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
 def test_message_with_thread_ts_accepted():
+    """A message in a bot-started thread is accepted."""
+    # Simulate a prior bot response whose response_ts is the thread root
+    SlackInboundEvent.objects.create(
+        event_id="Ev_bot_root",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U999",
+        event_ts="1720000000.000100",
+        message_text="<@B123> hello",
+        thread_ts="",
+        status="RESPONDED",
+        response_ts="1720000000.000100",
+    )
     client = Client()
     payload = {
         "team_id": "T123",
@@ -371,3 +384,187 @@ def test_parse_slack_payload_invalid():
     from apps.slack_bot.exceptions import SlackEventParseError
     with pytest.raises(SlackEventParseError):
         parse_slack_payload(b"not json")
+
+
+# ===========================================================================
+# Thread reply behaviour — four scenarios
+# ===========================================================================
+
+@pytest.mark.django_db
+@override_settings(SLACK_SIGNING_SECRET=SECRET)
+def test_top_level_mention_replies_in_channel():
+    """A top-level @bot mention has no thread_ts → reply in channel."""
+    client = Client()
+    payload = {
+        "team_id": "T123",
+        "type": "event_callback",
+        "event_id": "Ev_top_mention",
+        "event": {
+            "type": "app_mention",
+            "user": "U123",
+            "text": "<@B123> hello",
+            "ts": "1720000000.000100",
+            "channel": "C123",
+            "event_ts": "1720000000.000100",
+            # No thread_ts — top-level mention
+        },
+    }
+    response = _post(client, payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "received"
+    event = SlackInboundEvent.objects.get(event_id="Ev_top_mention")
+    assert event.thread_ts == ""  # persisted as empty
+
+
+@pytest.mark.django_db
+@override_settings(SLACK_SIGNING_SECRET=SECRET)
+def test_threaded_mention_replies_in_thread():
+    """A @bot mention inside a thread preserves thread_ts."""
+    client = Client()
+    payload = {
+        "team_id": "T123",
+        "type": "event_callback",
+        "event_id": "Ev_thread_mention",
+        "event": {
+            "type": "app_mention",
+            "user": "U123",
+            "text": "<@B123> hello",
+            "ts": "1720000001.000200",
+            "thread_ts": "1720000000.000100",
+            "channel": "C123",
+            "event_ts": "1720000001.000200",
+        },
+    }
+    response = _post(client, payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "received"
+    event = SlackInboundEvent.objects.get(event_id="Ev_thread_mention")
+    assert event.thread_ts == "1720000000.000100"
+
+
+@pytest.mark.django_db
+@override_settings(SLACK_SIGNING_SECRET=SECRET)
+def test_reply_in_bot_thread_accepted():
+    """A non-mention reply in a bot-started thread is accepted."""
+    # Simulate a prior bot response — its response_ts is the thread root
+    SlackInboundEvent.objects.create(
+        event_id="Ev_bot_resp_1",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U999",
+        event_ts="1720000000.000100",
+        message_text="<@B123> hello",
+        thread_ts="",
+        status="RESPONDED",
+        response_ts="1720000000.000100",
+    )
+    client = Client()
+    payload = {
+        "team_id": "T123",
+        "type": "event_callback",
+        "event_id": "Ev_reply_bot_thread",
+        "event": {
+            "type": "message",
+            "user": "U123",
+            "text": "what about Facebook?",
+            "ts": "1720000001.000300",
+            "thread_ts": "1720000000.000100",
+            "channel": "C123",
+        },
+    }
+    response = _post(client, payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "received"
+
+
+@pytest.mark.django_db
+@override_settings(SLACK_SIGNING_SECRET=SECRET)
+def test_reply_in_random_thread_ignored():
+    """A non-mention reply in a non-bot thread is ignored with not_bot_thread."""
+    client = Client()
+    payload = {
+        "team_id": "T123",
+        "type": "event_callback",
+        "event_id": "Ev_reply_random_thread",
+        "event": {
+            "type": "message",
+            "user": "U123",
+            "text": "hello",
+            "ts": "1720000001.000400",
+            "thread_ts": "1720000000.999999",  # no bot response with this ts
+            "channel": "C123",
+        },
+    }
+    response = _post(client, payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ignored"
+    assert body["reason"] == "not_bot_thread"
+    assert not SlackInboundEvent.objects.filter(event_id="Ev_reply_random_thread").exists()
+
+
+# ===========================================================================
+# Unit tests for is_known_bot_thread
+# ===========================================================================
+
+@pytest.mark.django_db
+def test_is_known_bot_thread_true():
+    from apps.slack_bot.events import is_known_bot_thread
+    SlackInboundEvent.objects.create(
+        event_id="Ev_bot_1",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U999",
+        event_ts="1720000000.000100",
+        message_text="hello",
+        thread_ts="",
+        status="RESPONDED",
+        response_ts="1720000000.000100",
+    )
+    assert is_known_bot_thread("C123", "1720000000.000100") is True
+
+
+@pytest.mark.django_db
+def test_is_known_bot_thread_false_no_match():
+    from apps.slack_bot.events import is_known_bot_thread
+    assert is_known_bot_thread("C123", "1720000000.000100") is False
+
+
+@pytest.mark.django_db
+def test_is_known_bot_thread_false_wrong_channel():
+    from apps.slack_bot.events import is_known_bot_thread
+    SlackInboundEvent.objects.create(
+        event_id="Ev_bot_2",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U999",
+        event_ts="1720000000.000100",
+        message_text="hello",
+        thread_ts="",
+        status="RESPONDED",
+        response_ts="1720000000.000100",
+    )
+    assert is_known_bot_thread("C999", "1720000000.000100") is False
+
+
+@pytest.mark.django_db
+def test_is_known_bot_thread_false_not_responded():
+    from apps.slack_bot.events import is_known_bot_thread
+    SlackInboundEvent.objects.create(
+        event_id="Ev_bot_3",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U999",
+        event_ts="1720000000.000100",
+        message_text="hello",
+        thread_ts="",
+        status="RECEIVED",  # not RESPONDED
+        response_ts="",
+    )
+    assert is_known_bot_thread("C123", "1720000000.000100") is False
+
+
+def test_is_known_bot_thread_empty_inputs():
+    from apps.slack_bot.events import is_known_bot_thread
+    assert is_known_bot_thread("", "1720000000.000100") is False
+    assert is_known_bot_thread("C123", "") is False

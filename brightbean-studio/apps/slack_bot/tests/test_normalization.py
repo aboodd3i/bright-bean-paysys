@@ -237,8 +237,8 @@ def test_normalize_whitespace_only_raises():
 
 
 @pytest.mark.django_db
-def test_normalize_thread_ts_fallback_to_event_ts():
-    """If thread_ts is empty, normalized thread_ts should equal event_ts."""
+def test_normalize_empty_thread_ts_stays_empty():
+    """If thread_ts is empty (top-level message), it stays empty."""
     event = SlackInboundEvent.objects.create(
         event_id="Ev_norm_9",
         team_id="T123",
@@ -246,10 +246,10 @@ def test_normalize_thread_ts_fallback_to_event_ts():
         user_id="U123",
         event_ts="1720000000.000900",
         message_text="<@B123> hello",
-        thread_ts="",  # empty
+        thread_ts="",  # empty — top-level mention
     )
     result = normalize_inbound_event(event)
-    assert result.thread_ts == "1720000000.000900"
+    assert result.thread_ts == ""
 
 
 @pytest.mark.django_db
@@ -328,3 +328,35 @@ def test_normalize_dataclass_is_frozen():
     result = normalize_inbound_event(event)
     with pytest.raises(AttributeError):
         result.text = "mutated"
+
+
+@pytest.mark.django_db
+def test_normalize_top_level_mention_empty_thread_ts():
+    """Top-level mention (thread_ts='') → normalized thread_ts is empty."""
+    event = SlackInboundEvent.objects.create(
+        event_id="Ev_norm_top",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U123",
+        event_ts="1720000000.002000",
+        message_text="<@B123> hello",
+        thread_ts="",
+    )
+    result = normalize_inbound_event(event)
+    assert result.thread_ts == ""
+
+
+@pytest.mark.django_db
+def test_normalize_threaded_mention_preserves_thread_ts():
+    """Threaded mention (thread_ts set) → normalized thread_ts preserved."""
+    event = SlackInboundEvent.objects.create(
+        event_id="Ev_norm_threaded",
+        team_id="T123",
+        channel_id="C123",
+        user_id="U123",
+        event_ts="1720000000.002100",
+        message_text="<@B123> hello",
+        thread_ts="1720000000.000100",
+    )
+    result = normalize_inbound_event(event)
+    assert result.thread_ts == "1720000000.000100"
