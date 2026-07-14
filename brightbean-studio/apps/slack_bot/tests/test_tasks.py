@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from apps.slack_bot.constants import (
+    STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_RESPONDED,
 )
@@ -65,11 +66,11 @@ def test_missing_event_returns_not_found():
 
 
 # ===========================================================================
-# 2. Greeting event — authorization fails (no channel mapping), error delivered
+# 2. Greeting event — simple response delivered, no authorization
 # ===========================================================================
 
 @pytest.mark.django_db
-def test_greeting_event_no_response():
+def test_greeting_event_simple_response():
     event = _create_event(event_id="Ev_greet", message_text="<@B123> hello")
     delivery = _fake_delivery()
 
@@ -77,7 +78,7 @@ def test_greeting_event_no_response():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "error"
+    assert result.response_type == "greeting"
     assert len(delivery.calls) == 1
 
     event.refresh_from_db()
@@ -85,11 +86,11 @@ def test_greeting_event_no_response():
 
 
 # ===========================================================================
-# 3. Help event — authorization fails, error delivered
+# 3. Help event — simple response delivered, no authorization
 # ===========================================================================
 
 @pytest.mark.django_db
-def test_help_event_no_response():
+def test_help_event_simple_response():
     event = _create_event(event_id="Ev_help", message_text="<@B123> help")
     delivery = _fake_delivery()
 
@@ -97,7 +98,7 @@ def test_help_event_no_response():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "error"
+    assert result.response_type == "help"
 
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
@@ -196,7 +197,7 @@ def test_punctuation_only_ignored():
 
 @pytest.mark.django_db
 def test_delivery_not_called_for_no_response():
-    """Authorization fails, error message is delivered."""
+    """Simple greeting delivery fails → event marked FAILED."""
     event = _create_event(event_id="Ev_nodeliver2", message_text="<@B123> hello")
 
     def bad_delivery(**kwargs):
@@ -204,17 +205,16 @@ def test_delivery_not_called_for_no_response():
 
     result = process_inbound_event(event.event_id, deliver_response=bad_delivery)
 
-    # Authorization fails → error text is set, delivery is attempted but fails
-    # → the error is swallowed and the event is still marked RESPONDED
-    assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    # Greeting → delivery attempted but fails → FAILED
+    assert result.ok is False
+    assert result.status == RESULT_FAILED
 
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_FAILED
 
 
 # ===========================================================================
-# 9. No delivery callback — no_response still results in IGNORED
+# 9. No delivery callback — greeting still processed
 # ===========================================================================
 
 @pytest.mark.django_db
@@ -225,7 +225,7 @@ def test_no_delivery_callback():
 
     assert result.ok is True
     assert result.status == "processed"
-    assert result.response_type == "error"
+    assert result.response_type == "greeting"
 
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
@@ -325,7 +325,7 @@ def test_tasks_module_does_not_import_brightbean_analytics():
 
 @pytest.mark.django_db
 def test_process_with_real_delivery_callback_mock():
-    """Authorization fails, error message is delivered via Slack."""
+    """Greeting message delivered via Slack delivery callback."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_real_delivery", message_text="<@B123> hello")
@@ -342,6 +342,7 @@ def test_process_with_real_delivery_callback_mock():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
+    assert result.response_type == "greeting"
     mock_send.assert_called_once()
 
     event.refresh_from_db()
@@ -350,7 +351,7 @@ def test_process_with_real_delivery_callback_mock():
 
 @pytest.mark.django_db
 def test_delivery_failure_through_callback_marks_failed():
-    """Authorization fails, delivery also fails — error is swallowed."""
+    """Simple greeting delivery fails — event marked FAILED."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_delivery_fail", message_text="<@B123> hello")
@@ -366,12 +367,12 @@ def test_delivery_failure_through_callback_marks_failed():
             event.event_id, deliver_response=deliver_slack_response
         )
 
-    assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    assert result.ok is False
+    assert result.status == RESULT_FAILED
     mock_send.assert_called_once()
 
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_FAILED
 
 
 @pytest.mark.django_db

@@ -31,6 +31,7 @@ from .llm.router import create_default_router
 from .llm_prompt import SYSTEM_PROMPT
 from .models import SlackInboundEvent
 from .normalization import normalize_inbound_event
+from .routing import route_simple_command
 from .tool_execution import OrchestrationLimits, ToolOrchestrator
 from .tool_registry_prod import build_tool_registry
 
@@ -166,6 +167,60 @@ def process_inbound_event(
             status=RESULT_IGNORED,
             event_id=event_id,
             error="Message rejected by normalization",
+        )
+
+    # --- 4b. Deterministic simple-message routing ---
+    # Greetings, help, and status commands are handled here without
+    # authorization or LLM orchestration.  Only analytics-relevant
+    # messages continue to the authorization/LLM pipeline.
+    simple_response = route_simple_command(request)
+    if simple_response.response_type != RESPONSE_TYPE_NO_RESPONSE:
+        response_text = simple_response.text
+        response_type = simple_response.response_type
+
+        if deliver_response is not None:
+            try:
+                response_ts = deliver_response(
+                    channel_id=request.channel_id,
+                    text=response_text,
+                    thread_ts=request.thread_ts,
+                    event=event,
+                )
+            except Exception as exc:
+                logger.exception("Delivery failed for event %s", event_id)
+                event.status = STATUS_FAILED
+                event.save(update_fields=["status", "updated_at"])
+                return ProcessingResult(
+                    ok=False,
+                    status=RESULT_FAILED,
+                    event_id=event_id,
+                    response_text=response_text,
+                    response_type=response_type,
+                    error=f"Delivery error: {exc}",
+                )
+
+            ts_str = str(response_ts) if response_ts is not None else ""
+            event.status = STATUS_RESPONDED
+            event.response_ts = ts_str
+            event.save(update_fields=["status", "response_ts", "updated_at"])
+            return ProcessingResult(
+                ok=True,
+                status=RESULT_DELIVERED,
+                event_id=event_id,
+                response_text=response_text,
+                response_type=response_type,
+                response_ts=ts_str,
+            )
+
+        # No delivery callback — return processed result
+        event.status = STATUS_RESPONDED
+        event.save(update_fields=["status", "updated_at"])
+        return ProcessingResult(
+            ok=True,
+            status=RESULT_PROCESSED,
+            event_id=event_id,
+            response_text=response_text,
+            response_type=response_type,
         )
 
     # --- 5. Resolve authorization ---

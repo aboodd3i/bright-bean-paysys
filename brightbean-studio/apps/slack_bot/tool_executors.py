@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any
 
 from django.utils import timezone
@@ -46,6 +46,11 @@ from .contracts import (
     ToolResultStatus,
 )
 from .errors import ErrorCode
+from .metric_validation import validate_metric
+from .platform_mapping import (
+    is_supported_internal,
+    normalize_to_canonical,
+)
 from .schemas import (
     ComparePlatformsInput,
     GetAccountStatsInput,
@@ -64,36 +69,103 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class AccountResolution:
+    """Outcome of account resolution.
+
+    Attributes
+    ----------
+    status : str
+        One of ``RESOLVED``, ``NO_ACCOUNT``, ``MULTIPLE_ACCOUNTS``,
+        ``ACCOUNT_NOT_ALLOWED``.
+    account : SocialAccount | None
+        The resolved account when status is ``RESOLVED``.
+    choices : list[dict[str, str]] | None
+        Safe account references when status is ``MULTIPLE_ACCOUNTS``.
+    """
+
+    RESOLVED = "resolved"
+    NO_ACCOUNT = "no_account"
+    MULTIPLE_ACCOUNTS = "multiple_accounts"
+    ACCOUNT_NOT_ALLOWED = "account_not_allowed"
+
+    def __init__(
+        self,
+        *,
+        status: str,
+        account: SocialAccount | None = None,
+        choices: list[dict[str, str]] | None = None,
+    ) -> None:
+        self.status = status
+        self.account = account
+        self.choices = choices
+
+
 def _resolve_account(
-    platform: str,
+    canonical_platform: str,
     account_id: uuid.UUID | None,
     context: ToolContext,
-) -> SocialAccount | None:
-    """Resolve a single social account for *platform* within *context*.
+) -> AccountResolution:
+    """Resolve a single social account for *canonical_platform* within *context*.
 
-    If *account_id* is provided, it must be in ``context.allowed_account_ids``.
-    If not, auto-resolves the single connected account for the platform.
-    Returns ``None`` if no account is found or the account is not allowed.
+    Uses :mod:`apps.slack_bot.platform_mapping` to match internal platform
+    variants (e.g. ``instagram_login`` → ``instagram``).
+
+    Returns an :class:`AccountResolution` with one of:
+    - ``RESOLVED`` — exactly one account found
+    - ``NO_ACCOUNT`` — zero accounts found
+    - ``MULTIPLE_ACCOUNTS`` — more than one account, no explicit ``account_id``
+    - ``ACCOUNT_NOT_ALLOWED`` — ``account_id`` not in allowed set
     """
-    qs = SocialAccount.objects.filter(
-        workspace_id=context.workspace_id,
-        platform=platform,
-        connection_status__in=("connected", "token_expiring"),
-    )
+    from .platform_mapping import internal_platforms_for
+
+    internal_variants = internal_platforms_for(canonical_platform)
+
     if account_id is not None:
         if account_id not in context.allowed_account_ids:
-            return None
-        qs = qs.filter(id=account_id)
-    else:
-        qs = qs.filter(id__in=context.allowed_account_ids)
+            return AccountResolution(status=AccountResolution.ACCOUNT_NOT_ALLOWED)
+        account = SocialAccount.objects.filter(
+            workspace_id=context.workspace_id,
+            platform__in=internal_variants,
+            connection_status__in=("connected", "token_expiring"),
+            id=account_id,
+        ).first()
+        if account is None:
+            return AccountResolution(status=AccountResolution.NO_ACCOUNT)
+        return AccountResolution(status=AccountResolution.RESOLVED, account=account)
 
-    return qs.first()
+    accounts = list(
+        SocialAccount.objects.filter(
+            workspace_id=context.workspace_id,
+            platform__in=internal_variants,
+            connection_status__in=("connected", "token_expiring"),
+            id__in=context.allowed_account_ids,
+        )
+    )
+
+    if not accounts:
+        return AccountResolution(status=AccountResolution.NO_ACCOUNT)
+    if len(accounts) == 1:
+        return AccountResolution(status=AccountResolution.RESOLVED, account=accounts[0])
+
+    choices = [
+        {
+            "account_id": str(a.id),
+            "platform": normalize_to_canonical(a.platform),
+            "display_name": a.account_name or "",
+            "handle": a.account_handle or "",
+        }
+        for a in accounts
+    ]
+    return AccountResolution(
+        status=AccountResolution.MULTIPLE_ACCOUNTS,
+        choices=choices,
+    )
 
 
 def _account_ref(account: SocialAccount) -> AccountReference:
     return AccountReference(
         account_id=account.id,
-        platform=account.platform,
+        platform=normalize_to_canonical(account.platform),
         display_name=account.account_name or "",
         handle=account.account_handle or "",
     )
@@ -109,7 +181,6 @@ def _no_data(tool_name: str, message: str) -> ToolResult:
     return ToolResult(
         status=ToolResultStatus.NO_DATA,
         tool_name=tool_name,
-        error_code=ErrorCode.NO_DATA.value,
         data={"message": message},
     )
 
@@ -123,6 +194,55 @@ def _failed(tool_name: str, message: str) -> ToolResult:
     )
 
 
+def _invalid_metric(
+    tool_name: str,
+    platform: str,
+    metric: str,
+    supported: frozenset[str],
+) -> ToolResult:
+    return ToolResult(
+        status=ToolResultStatus.FAILED,
+        tool_name=tool_name,
+        error_code=ErrorCode.INVALID_METRIC.value,
+        data={
+            "message": f"Metric {metric!r} is not valid for {platform}.",
+            "supported_metrics": sorted(supported),
+        },
+    )
+
+
+def _clarification(
+    tool_name: str,
+    platform: str,
+    choices: list[dict[str, str]],
+) -> ToolResult:
+    return ToolResult(
+        status=ToolResultStatus.CLARIFICATION_REQUIRED,
+        tool_name=tool_name,
+        data={
+            "message": f"Multiple {platform} accounts found. Specify account_id.",
+            "accounts": choices,
+        },
+    )
+
+
+def _derived_to_dict(derived: Any) -> dict[str, Any]:
+    """Flatten a DerivedMetric into a safe primitive dict.
+
+    DerivedMetric fields (from apps.analytics.derive):
+    - value : float
+    - delta : float  (percent change vs previous period)
+    - series : list[float]
+    - kind : str
+    """
+    return {
+        "value": derived.value,
+        "delta": derived.delta,
+        "series": list(derived.series),
+        "kind": derived.kind,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Executors
 # ---------------------------------------------------------------------------
@@ -133,28 +253,33 @@ def execute_list_connected_accounts(
     arguments: ListConnectedAccountsInput,
     context: ToolContext,
 ) -> ToolResult:
-    """List all connected social accounts in the caller's workspace."""
+    """List all connected social accounts in the caller's workspace.
+
+    Only returns accounts on bot-supported platforms (Instagram, Facebook,
+    LinkedIn).  Internal platform variants are normalized to canonical names.
+    """
     accounts = SocialAccount.objects.filter(
         workspace_id=context.workspace_id,
         connection_status__in=("connected", "token_expiring"),
         id__in=context.allowed_account_ids,
     ).values_list("id", "platform", "account_name", "account_handle")
 
-    if not accounts:
-        return _no_data(
-            "list_connected_accounts",
-            "No connected social accounts found in your workspace.",
-        )
-
     account_list = [
         {
             "account_id": str(aid),
-            "platform": platform,
+            "platform": normalize_to_canonical(platform),
             "display_name": name or "",
             "handle": handle or "",
         }
         for aid, platform, name, handle in accounts
+        if is_supported_internal(platform)
     ]
+
+    if not account_list:
+        return _no_data(
+            "list_connected_accounts",
+            "No connected social accounts found in your workspace.",
+        )
 
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
@@ -169,12 +294,21 @@ def execute_get_account_stats(
     context: ToolContext,
 ) -> ToolResult:
     """Get aggregate analytics stats for a social account."""
-    account = _resolve_account(arguments.platform.value, arguments.account_id, context)
-    if account is None:
+    canonical = arguments.platform.value
+    resolution = _resolve_account(canonical, arguments.account_id, context)
+
+    if resolution.status == AccountResolution.NO_ACCOUNT:
         return _no_data(
             "get_account_stats",
-            f"No connected {arguments.platform.value} account found.",
+            f"No connected {canonical} account found.",
         )
+    if resolution.status == AccountResolution.ACCOUNT_NOT_ALLOWED:
+        return _failed("get_account_stats", "Account is not authorized.")
+    if resolution.status == AccountResolution.MULTIPLE_ACCOUNTS:
+        return _clarification("get_account_stats", canonical, resolution.choices or [])
+
+    account = resolution.account
+    assert account is not None  # noqa: S101 — guaranteed by RESOLVED
 
     bundle = account_analytics_bundle(account, arguments.days)
     series_map = bundle["series_map"]
@@ -184,10 +318,7 @@ def execute_get_account_stats(
     stats = {
         card["metric"]: {
             "label": card["label"],
-            "current": card["derived"].current,
-            "previous": card["derived"].previous,
-            "change": card["derived"].change,
-            "change_pct": card["derived"].change_pct,
+            **_derived_to_dict(card["derived"]),
         }
         for card in cards
     }
@@ -195,7 +326,7 @@ def execute_get_account_stats(
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
         tool_name="get_account_stats",
-        platform=account.platform,
+        platform=canonical,
         selected_account=_account_ref(account),
         period=_period(arguments.days),
         data_as_of=captured_at,
@@ -209,12 +340,27 @@ def execute_get_top_posts(
     context: ToolContext,
 ) -> ToolResult:
     """Get top posts ranked by a metric."""
-    account = _resolve_account(arguments.platform.value, arguments.account_id, context)
-    if account is None:
+    canonical = arguments.platform.value
+
+    # Metric validation — no silent fallback.
+    valid, supported = validate_metric(canonical, arguments.metric)
+    if not valid:
+        return _invalid_metric("get_top_posts", canonical, arguments.metric, supported)
+
+    resolution = _resolve_account(canonical, arguments.account_id, context)
+
+    if resolution.status == AccountResolution.NO_ACCOUNT:
         return _no_data(
             "get_top_posts",
-            f"No connected {arguments.platform.value} account found.",
+            f"No connected {canonical} account found.",
         )
+    if resolution.status == AccountResolution.ACCOUNT_NOT_ALLOWED:
+        return _failed("get_top_posts", "Account is not authorized.")
+    if resolution.status == AccountResolution.MULTIPLE_ACCOUNTS:
+        return _clarification("get_top_posts", canonical, resolution.choices or [])
+
+    account = resolution.account
+    assert account is not None  # noqa: S101
 
     result = all_posts_for(
         account,
@@ -228,9 +374,9 @@ def execute_get_top_posts(
     posts = [
         {
             "post_id": str(row["post"].id),
-            "caption": row["caption"][:200],
+            "caption": (row["caption"] or "")[:200],
             "date": row["date"],
-            "stats": row["stats"],
+            "stats": dict(row["stats"]),
         }
         for row in result["rows"]
     ]
@@ -241,7 +387,7 @@ def execute_get_top_posts(
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
         tool_name="get_top_posts",
-        platform=account.platform,
+        platform=canonical,
         selected_account=_account_ref(account),
         period=_period(arguments.days),
         data={"posts": posts, "total": result["total"]},
@@ -264,14 +410,41 @@ def execute_get_post_detail(
     if post.social_account_id not in context.allowed_account_ids:
         return _failed("get_post_detail", "You are not authorized to view this post.")
 
+    if not is_supported_internal(post.social_account.platform):
+        return _no_data("get_post_detail", "Post is on an unsupported platform.")
+
     detail = post_detail(post)
+    canonical = normalize_to_canonical(post.social_account.platform)
+
+    # Flatten the service result into safe primitives — no Django models.
+    safe_detail = {
+        "post_id": str(post.id),
+        "caption": detail.get("caption", ""),
+        "date": detail.get("date", ""),
+        "days_ago": detail.get("days_ago"),
+        "media_kind": detail.get("media_kind", ""),
+        "captured_at": detail.get("captured_at").isoformat()
+        if detail.get("captured_at") is not None
+        else None,
+        "metric_tiles": [
+            {
+                "key": t["key"],
+                "label": t["label"],
+                "value": t["value"],
+                "kind": t["kind"],
+                "sparkline": list(t.get("sparkline", [])),
+                "is_primary": t["is_primary"],
+            }
+            for t in detail.get("metric_tiles", [])
+        ],
+    }
 
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
         tool_name="get_post_detail",
-        platform=post.social_account.platform,
+        platform=canonical,
         selected_account=_account_ref(post.social_account),
-        data={"post": detail},
+        data={"post": safe_detail},
     )
 
 
@@ -281,12 +454,21 @@ def execute_get_engagement_summary(
     context: ToolContext,
 ) -> ToolResult:
     """Get engagement summary for a social account."""
-    account = _resolve_account(arguments.platform.value, arguments.account_id, context)
-    if account is None:
+    canonical = arguments.platform.value
+    resolution = _resolve_account(canonical, arguments.account_id, context)
+
+    if resolution.status == AccountResolution.NO_ACCOUNT:
         return _no_data(
             "get_engagement_summary",
-            f"No connected {arguments.platform.value} account found.",
+            f"No connected {canonical} account found.",
         )
+    if resolution.status == AccountResolution.ACCOUNT_NOT_ALLOWED:
+        return _failed("get_engagement_summary", "Account is not authorized.")
+    if resolution.status == AccountResolution.MULTIPLE_ACCOUNTS:
+        return _clarification("get_engagement_summary", canonical, resolution.choices or [])
+
+    account = resolution.account
+    assert account is not None  # noqa: S101
 
     bundle = account_analytics_bundle(account, arguments.days)
     series_map = bundle["series_map"]
@@ -298,14 +480,27 @@ def execute_get_engagement_summary(
             "Engagement data is not available for this platform.",
         )
 
+    # Flatten DerivedMetric objects into safe primitives.
+    safe_engagement = {
+        "rate": _derived_to_dict(eng["rate"]),
+        "parts": [
+            {
+                "metric": p["metric"],
+                "label": p["label"],
+                **_derived_to_dict(p["derived"]),
+            }
+            for p in eng.get("parts", [])
+        ],
+    }
+
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
         tool_name="get_engagement_summary",
-        platform=account.platform,
+        platform=canonical,
         selected_account=_account_ref(account),
         period=_period(arguments.days),
         data_as_of=bundle["max_captured_at"],
-        data={"engagement": eng},
+        data={"engagement": safe_engagement},
     )
 
 
@@ -315,12 +510,21 @@ def execute_get_follower_growth(
     context: ToolContext,
 ) -> ToolResult:
     """Get follower growth for a social account."""
-    account = _resolve_account(arguments.platform.value, arguments.account_id, context)
-    if account is None:
+    canonical = arguments.platform.value
+    resolution = _resolve_account(canonical, arguments.account_id, context)
+
+    if resolution.status == AccountResolution.NO_ACCOUNT:
         return _no_data(
             "get_follower_growth",
-            f"No connected {arguments.platform.value} account found.",
+            f"No connected {canonical} account found.",
         )
+    if resolution.status == AccountResolution.ACCOUNT_NOT_ALLOWED:
+        return _failed("get_follower_growth", "Account is not authorized.")
+    if resolution.status == AccountResolution.MULTIPLE_ACCOUNTS:
+        return _clarification("get_follower_growth", canonical, resolution.choices or [])
+
+    account = resolution.account
+    assert account is not None  # noqa: S101
 
     bundle = account_analytics_bundle(account, arguments.days)
     series_map = bundle["series_map"]
@@ -337,16 +541,13 @@ def execute_get_follower_growth(
     return ToolResult(
         status=ToolResultStatus.SUCCESS,
         tool_name="get_follower_growth",
-        platform=account.platform,
+        platform=canonical,
         selected_account=_account_ref(account),
         period=_period(arguments.days),
         data_as_of=bundle["max_captured_at"],
         data={
             "metric": metric_key,
-            "current": derived.current,
-            "previous": derived.previous,
-            "change": derived.change,
-            "change_pct": derived.change_pct,
+            **_derived_to_dict(derived),
         },
     )
 
@@ -357,14 +558,26 @@ def execute_compare_platforms(
     context: ToolContext,
 ) -> ToolResult:
     """Compare a metric across multiple platforms."""
+    # Validate metric against all requested platforms.
+    for platform in arguments.platforms:
+        valid, supported = validate_metric(platform.value, arguments.metric)
+        if not valid:
+            return _invalid_metric(
+                "compare_platforms", platform.value, arguments.metric, supported,
+            )
+
     comparison: dict[str, Any] = {}
 
     for platform in arguments.platforms:
         platform_val = platform.value
-        account = _resolve_account(platform_val, None, context)
-        if account is None:
+        resolution = _resolve_account(platform_val, None, context)
+
+        if resolution.status != AccountResolution.RESOLVED:
             comparison[platform_val] = {"available": False}
             continue
+
+        account = resolution.account
+        assert account is not None  # noqa: S101
 
         bundle = account_analytics_bundle(account, arguments.days)
         series_map = bundle["series_map"]
@@ -373,12 +586,7 @@ def execute_compare_platforms(
         metric_value = None
         for card in cards:
             if card["metric"] == arguments.metric:
-                metric_value = {
-                    "current": card["derived"].current,
-                    "previous": card["derived"].previous,
-                    "change": card["derived"].change,
-                    "change_pct": card["derived"].change_pct,
-                }
+                metric_value = _derived_to_dict(card["derived"])
                 break
 
         comparison[platform_val] = {

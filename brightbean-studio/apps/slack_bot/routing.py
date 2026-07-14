@@ -3,9 +3,10 @@
 Receives a normalized ``SlackAnalyticsRequest`` and returns a
 ``SimpleBotResponse`` with a response type and text.
 
-All current routes return ``no_response`` with empty text.
-User-facing responses will be implemented during LLM + BrightBean
-analytics integration.
+Greetings, help requests, and basic conversational messages are handled
+here deterministically — before authorization or LLM orchestration.
+Only analytics-relevant messages return ``no_response`` to continue
+to the authorization/LLM pipeline.
 """
 
 from __future__ import annotations
@@ -13,7 +14,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .constants import RESPONSE_TYPE_NO_RESPONSE
+from .constants import (
+    RESPONSE_TYPE_GREETING,
+    RESPONSE_TYPE_HELP,
+    RESPONSE_TYPE_NO_RESPONSE,
+    RESPONSE_TYPE_STATUS,
+)
 from .contracts import SlackAnalyticsRequest
 
 # ---------------------------------------------------------------------------
@@ -39,11 +45,11 @@ _GREETING_KEYWORDS = frozenset({
 })
 
 _HELP_KEYWORDS = frozenset({
-    "help", "what can you do", "commands", "examples",
+    "help", "what can you do", "what do you do", "commands", "examples",
 })
 
 _STATUS_KEYWORDS = frozenset({
-    "status", "connected accounts", "connections", "account status",
+    "status", "how are you", "how are you doing",
 })
 
 
@@ -80,9 +86,43 @@ def is_status_command(text: str) -> bool:
 def route_simple_command(request: SlackAnalyticsRequest) -> SimpleBotResponse:
     """Route a normalized Slack analytics request to a simple response.
 
-    Currently all routes return ``no_response`` with empty text.
-    Keyword classification helpers are retained for future LLM routing.
+    Greetings, help, and status commands return a deterministic response
+    that bypasses authorization and LLM orchestration entirely.
+
+    Everything else returns ``no_response`` to continue to the
+    authorization/LLM analytics pipeline.
     """
+    text = normalize_command_text(request.text)
+
+    if text in _GREETING_KEYWORDS:
+        return SimpleBotResponse(
+            response_type=RESPONSE_TYPE_GREETING,
+            text=(
+                "Hi. Ask me about Instagram, Facebook, or LinkedIn analytics."
+            ),
+        )
+
+    if text in _HELP_KEYWORDS:
+        return SimpleBotResponse(
+            response_type=RESPONSE_TYPE_HELP,
+            text=(
+                "I can help with social media analytics. Try asking:\n"
+                "• \"Show Instagram reach for the last 30 days\"\n"
+                "• \"Top Facebook posts this week\"\n"
+                "• \"Compare LinkedIn and Instagram engagement\"\n"
+                "• \"Follower growth for the last 7 days\""
+            ),
+        )
+
+    if text in _STATUS_KEYWORDS:
+        return SimpleBotResponse(
+            response_type=RESPONSE_TYPE_STATUS,
+            text=(
+                "I'm ready to help with Instagram, Facebook, "
+                "or LinkedIn analytics."
+            ),
+        )
+
     return SimpleBotResponse(
         response_type=RESPONSE_TYPE_NO_RESPONSE,
         text="",

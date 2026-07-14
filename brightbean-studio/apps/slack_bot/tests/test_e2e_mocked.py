@@ -21,6 +21,7 @@ from django.test import Client, override_settings
 from django.urls import reverse
 
 from apps.slack_bot.constants import (
+    STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_RESPONDED,
 )
@@ -249,7 +250,7 @@ def test_e2e_invalid_json_does_not_enqueue():
 
 @pytest.mark.django_db
 def test_e2e_greeting_full_pipeline():
-    """Greeting message → normalize → auth fails → error delivered → RESPONDED."""
+    """Greeting message → normalize → simple response delivered → RESPONDED."""
     event = _create_event(event_id="Ev_e2e_greet", message_text="<@B123> hello")
     delivery = _fake_delivery()
 
@@ -257,6 +258,7 @@ def test_e2e_greeting_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
+    assert result.response_type == "greeting"
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
     assert len(delivery.calls) == 1
@@ -264,7 +266,7 @@ def test_e2e_greeting_full_pipeline():
 
 @pytest.mark.django_db
 def test_e2e_help_full_pipeline():
-    """Help command → normalize → auth fails → error delivered → RESPONDED."""
+    """Help command → normalize → simple response delivered → RESPONDED."""
     event = _create_event(event_id="Ev_e2e_help", message_text="<@B123> help")
     delivery = _fake_delivery()
 
@@ -272,13 +274,14 @@ def test_e2e_help_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
+    assert result.response_type == "help"
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db
 def test_e2e_status_full_pipeline():
-    """Status command → normalize → auth fails → error delivered → RESPONDED."""
+    """Status command → normalize → simple response delivered → RESPONDED."""
     event = _create_event(event_id="Ev_e2e_status", message_text="<@B123> status")
     delivery = _fake_delivery()
 
@@ -286,6 +289,7 @@ def test_e2e_status_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
+    assert result.response_type == "status"
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
 
@@ -310,7 +314,7 @@ def test_e2e_analytics_query_full_pipeline():
 
 @pytest.mark.django_db
 def test_e2e_delivery_not_called_for_no_response():
-    """Auth fails, error delivery attempted but exception is swallowed."""
+    """Greeting delivery fails → event marked FAILED."""
     event = _create_event(event_id="Ev_e2e_fail", message_text="<@B123> hello")
 
     def _bad_delivery(**kwargs):
@@ -319,10 +323,10 @@ def test_e2e_delivery_not_called_for_no_response():
 
     result = process_inbound_event(event.event_id, deliver_response=_bad_delivery)
 
-    assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    assert result.ok is False
+    assert result.status == RESULT_FAILED
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_FAILED
 
 
 @pytest.mark.django_db

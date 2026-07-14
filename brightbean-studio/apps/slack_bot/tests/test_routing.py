@@ -52,18 +52,18 @@ def test_normalize_command_text_strips_whitespace():
 @pytest.mark.parametrize("text", ["hi", "hello", "hey", "salam", "assalam o alaikum"])
 def test_greeting_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "no_response"
-    assert result.text == ""
+    assert result.response_type == "greeting"
+    assert result.text != ""
 
 
 def test_greeting_with_punctuation():
     result = route_simple_command(_make_request("hello!"))
-    assert result.response_type == "no_response"
+    assert result.response_type == "greeting"
 
 
 def test_greeting_uppercase():
     result = route_simple_command(_make_request("HI"))
-    assert result.response_type == "no_response"
+    assert result.response_type == "greeting"
 
 
 def test_is_greeting_helper():
@@ -76,16 +76,16 @@ def test_is_greeting_helper():
 # Help tests
 # ===========================================================================
 
-@pytest.mark.parametrize("text", ["help", "what can you do", "commands", "examples"])
+@pytest.mark.parametrize("text", ["help", "what can you do", "what do you do", "commands", "examples"])
 def test_help_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "no_response"
-    assert result.text == ""
+    assert result.response_type == "help"
+    assert result.text != ""
 
 
 def test_help_with_punctuation():
     result = route_simple_command(_make_request("what can you do?"))
-    assert result.response_type == "no_response"
+    assert result.response_type == "help"
 
 
 def test_is_help_command_helper():
@@ -98,17 +98,20 @@ def test_is_help_command_helper():
 # Status tests
 # ===========================================================================
 
-@pytest.mark.parametrize("text", ["status", "connected accounts", "connections", "account status"])
+@pytest.mark.parametrize("text", ["status", "how are you", "how are you doing"])
 def test_status_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "no_response"
-    assert result.text == ""
+    assert result.response_type == "status"
+    assert result.text != ""
 
 
 def test_is_status_command_helper():
     assert is_status_command("status") is True
-    assert is_status_command("connected accounts") is True
     assert is_status_command("help") is False
+    # Analytics intents must NOT be swallowed by status routing
+    assert is_status_command("connected accounts") is False
+    assert is_status_command("account status") is False
+    assert is_status_command("connections") is False
 
 
 # ===========================================================================
@@ -122,6 +125,12 @@ def test_is_status_command_helper():
         "compare facebook vs linkedin last 30 days",
         "linkedin follower growth this month",
         "facebook reach last 7 days",
+        "connected accounts",
+        "list accounts",
+        "account status",
+        "connections",
+        "instagram stats",
+        "show my accounts",
     ],
 )
 def test_analytics_variants(text):
@@ -139,9 +148,9 @@ def test_response_has_response_type():
     assert hasattr(result, "response_type")
 
 
-def test_response_has_empty_text():
+def test_response_has_nonempty_text_for_greeting():
     result = route_simple_command(_make_request("hi"))
-    assert result.text == ""
+    assert result.text != ""
 
 
 def test_response_metadata_defaults_to_dict():
@@ -177,7 +186,7 @@ def test_unknown_command_returns_no_response():
 
 def test_greeting_with_leading_trailing_whitespace():
     result = route_simple_command(_make_request("  hey  "))
-    assert result.response_type == "no_response"
+    assert result.response_type == "greeting"
 
 
 # ===========================================================================
