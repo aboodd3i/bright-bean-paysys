@@ -30,11 +30,7 @@ STORAGES["staticfiles"] = {  # noqa: F405
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "brightbean_test",
-        "USER": env("DB_USER", default="postgres"),  # noqa: F405
-        "PASSWORD": env("DB_PASSWORD", default="postgres"),  # noqa: F405
-        "HOST": env("DB_HOST", default="localhost"),  # noqa: F405
-        "PORT": env.int("DB_PORT", default=5432),  # noqa: F405
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": ":memory:",
     },
 }
