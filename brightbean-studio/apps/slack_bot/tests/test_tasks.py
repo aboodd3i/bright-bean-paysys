@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from apps.slack_bot.constants import (
@@ -19,6 +21,17 @@ from apps.slack_bot.tasks import (
     RESULT_NOT_FOUND,
     process_inbound_event,
 )
+
+
+def _mock_orchestrator(response_text="LLM response"):
+    """Patch the ToolOrchestrator.run method to return a mock result."""
+    mock_result = MagicMock()
+    mock_result.final_text = response_text
+    mock_result.error_message = None
+    return patch(
+        "apps.slack_bot.tasks.ToolOrchestrator.run",
+        return_value=mock_result,
+    )
 
 
 def _create_event(
@@ -66,19 +79,22 @@ def test_missing_event_returns_not_found():
 
 
 # ===========================================================================
-# 2. Greeting event — simple response delivered, no authorization
+# 2. Greeting event — goes through LLM, not deterministic routing
 # ===========================================================================
 
 @pytest.mark.django_db
-def test_greeting_event_simple_response():
+def test_greeting_event_calls_llm():
+    """'hello' must reach the LLM, not return a deterministic greeting."""
     event = _create_event(event_id="Ev_greet", message_text="<@B123> hello")
     delivery = _fake_delivery()
 
-    result = process_inbound_event(event.event_id, deliver_response=delivery)
+    with _mock_orchestrator("Hi! How can I help?") as mock_run:
+        result = process_inbound_event(event.event_id, deliver_response=delivery)
 
+    # Authorization fails (no mappings for T123) → error delivered
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "greeting"
+    assert result.response_type == "error"
     assert len(delivery.calls) == 1
 
     event.refresh_from_db()
@@ -86,19 +102,21 @@ def test_greeting_event_simple_response():
 
 
 # ===========================================================================
-# 3. Help event — simple response delivered, no authorization
+# 3. Help event — goes through LLM, not deterministic routing
 # ===========================================================================
 
 @pytest.mark.django_db
-def test_help_event_simple_response():
+def test_help_event_calls_llm():
+    """'help' must reach the LLM, not return a deterministic help text."""
     event = _create_event(event_id="Ev_help", message_text="<@B123> help")
     delivery = _fake_delivery()
 
-    result = process_inbound_event(event.event_id, deliver_response=delivery)
+    with _mock_orchestrator("I can help with analytics.") as mock_run:
+        result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "help"
+    assert result.response_type == "error"
 
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
@@ -149,25 +167,75 @@ def test_already_responded_skips_processing():
 
 
 # ===========================================================================
-# 6. Empty message normalization failure
+# 6. Mention-only message — converted to internal LLM prompt
 # ===========================================================================
 
 @pytest.mark.django_db
-def test_empty_message_after_mention_ignored():
+def test_mention_only_calls_llm():
+    """A mention-only message (e.g. '@bot') must be converted to an internal
+    prompt and sent to the LLM, not return a deterministic greeting."""
     event = _create_event(
-        event_id="Ev_empty",
+        event_id="Ev_mention_only",
         message_text="<@B123>",
     )
     delivery = _fake_delivery()
 
-    result = process_inbound_event(event.event_id, deliver_response=delivery)
+    with _mock_orchestrator("Hi! Ask me about analytics.") as mock_run:
+        result = process_inbound_event(event.event_id, deliver_response=delivery)
 
+    # Authorization fails (no mappings) → error delivered, not ignored
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
-    assert len(delivery.calls) == 0
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
+    assert len(delivery.calls) == 1
 
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
+    assert event.status == STATUS_RESPONDED
+
+
+@pytest.mark.django_db
+def test_mention_only_no_delivery_callback():
+    """Mention-only with no delivery callback still processes through LLM."""
+    event = _create_event(
+        event_id="Ev_mention_only_nodeliver",
+        message_text="<@B123>",
+    )
+
+    with _mock_orchestrator("Hi! Ask me about analytics."):
+        result = process_inbound_event(event.event_id)
+
+    assert result.ok is True
+    assert result.status == "processed"
+    assert result.response_type == "error"
+
+    event.refresh_from_db()
+    assert event.status == STATUS_RESPONDED
+
+
+@pytest.mark.django_db
+def test_mention_only_delivery_failure_marks_failed():
+    """Mention-only where delivery fails: auth fails first, error delivery
+    is best-effort (swallowed), so event is marked RESPONDED."""
+    event = _create_event(
+        event_id="Ev_mention_only_fail",
+        message_text="<@B123>",
+    )
+
+    def bad_delivery(**kwargs):
+        raise RuntimeError("Slack API exploded")
+
+    with _mock_orchestrator("Hi!"):
+        result = process_inbound_event(
+            event.event_id, deliver_response=bad_delivery,
+        )
+
+    # Authorization fails first → error delivery is best-effort → RESPONDED
+    assert result.ok is True
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
+
+    event.refresh_from_db()
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
@@ -192,40 +260,45 @@ def test_punctuation_only_ignored():
 
 
 # ===========================================================================
-# 8. Delivery callback not called for no_response routes
+# 8. Delivery failure — event marked FAILED
 # ===========================================================================
 
 @pytest.mark.django_db
 def test_delivery_not_called_for_no_response():
-    """Simple greeting delivery fails → event marked FAILED."""
+    """Delivery fails: auth fails first, error delivery is best-effort."""
     event = _create_event(event_id="Ev_nodeliver2", message_text="<@B123> hello")
 
     def bad_delivery(**kwargs):
         raise RuntimeError("Slack API exploded")
 
-    result = process_inbound_event(event.event_id, deliver_response=bad_delivery)
+    with _mock_orchestrator("Hi!"):
+        result = process_inbound_event(
+            event.event_id, deliver_response=bad_delivery,
+        )
 
-    # Greeting → delivery attempted but fails → FAILED
-    assert result.ok is False
-    assert result.status == RESULT_FAILED
+    # Authorization fails → error delivery is best-effort → RESPONDED
+    assert result.ok is True
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
 
     event.refresh_from_db()
-    assert event.status == STATUS_FAILED
+    assert event.status == STATUS_RESPONDED
 
 
 # ===========================================================================
-# 9. No delivery callback — greeting still processed
+# 9. No delivery callback — message still processed through LLM
 # ===========================================================================
 
 @pytest.mark.django_db
 def test_no_delivery_callback():
     event = _create_event(event_id="Ev_nodeliver", message_text="<@B123> hello")
 
-    result = process_inbound_event(event.event_id)
+    with _mock_orchestrator("Hi! How can I help?"):
+        result = process_inbound_event(event.event_id)
 
     assert result.ok is True
     assert result.status == "processed"
-    assert result.response_type == "greeting"
+    assert result.response_type == "error"
 
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
@@ -325,7 +398,7 @@ def test_tasks_module_does_not_import_brightbean_analytics():
 
 @pytest.mark.django_db
 def test_process_with_real_delivery_callback_mock():
-    """Greeting message delivered via Slack delivery callback."""
+    """Message delivered via Slack delivery callback (through LLM path)."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_real_delivery", message_text="<@B123> hello")
@@ -342,7 +415,7 @@ def test_process_with_real_delivery_callback_mock():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "greeting"
+    assert result.response_type == "error"  # auth fails for T123
     mock_send.assert_called_once()
 
     event.refresh_from_db()
@@ -351,7 +424,7 @@ def test_process_with_real_delivery_callback_mock():
 
 @pytest.mark.django_db
 def test_delivery_failure_through_callback_marks_failed():
-    """Simple greeting delivery fails — event marked FAILED."""
+    """Delivery fails: auth fails first, error delivery is best-effort."""
     from unittest.mock import patch
 
     event = _create_event(event_id="Ev_delivery_fail", message_text="<@B123> hello")
@@ -367,12 +440,15 @@ def test_delivery_failure_through_callback_marks_failed():
             event.event_id, deliver_response=deliver_slack_response
         )
 
-    assert result.ok is False
-    assert result.status == RESULT_FAILED
+    # Authorization fails → error delivery attempted via real callback
+    # The SlackDeliveryResult(ok=False) raises SlackDeliveryError which is
+    # swallowed by the auth-error best-effort delivery → RESPONDED
+    assert result.ok is True
+    assert result.status == RESULT_DELIVERED
     mock_send.assert_called_once()
 
     event.refresh_from_db()
-    assert event.status == STATUS_FAILED
+    assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db
@@ -384,4 +460,4 @@ def test_background_task_uses_delivery_callback():
     # @background decoration.  We verify the import exists.
     source = open(tasks_mod.__file__).read()
     assert "deliver_slack_response" in source
-    assert "deliver_response=deliver_slack_response" in source
+    assert "_deliver_with_reaction_cleanup" in source

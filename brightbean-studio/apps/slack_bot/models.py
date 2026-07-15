@@ -10,7 +10,18 @@ import uuid
 from django.conf import settings
 from django.db import models
 
-from .constants import STATUS_CHOICES, STATUS_RECEIVED
+from .constants import (
+    ACCESS_STATUS_APPROVED,
+    ACCESS_STATUS_CHOICES,
+    ADMIN_STATUS_ACTIVE,
+    ADMIN_STATUS_CHOICES,
+    AUDIT_ACTION_CHOICES,
+    PERMISSION_CHOICES,
+    PERMISSION_READ_ONLY,
+    STATUS_CHOICES,
+    STATUS_RECEIVED,
+    SYSTEM_ACTOR,
+)
 
 
 class SlackInboundEventManager(models.Manager):
@@ -163,3 +174,137 @@ class SlackUserMapping(models.Model):
 
     def __str__(self):
         return f"{self.slack_user_id} ({self.team_id}) → {self.user.email}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Bot whitelisting models
+# ---------------------------------------------------------------------------
+
+
+class BotAdministrator(models.Model):
+    """The single configured bot administrator for a workspace.
+
+    Only one record may exist per ``workspace_id`` (enforced by
+    ``unique=True`` on that field).  Created manually via the
+    ``create_bot_admin`` management command.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    workspace_id = models.CharField(max_length=64, unique=True, db_index=True)
+    slack_user_id = models.CharField(max_length=64, db_index=True)
+
+    status = models.CharField(
+        max_length=16,
+        choices=ADMIN_STATUS_CHOICES,
+        default=ADMIN_STATUS_ACTIVE,
+        db_index=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "slack_bot_administrator"
+
+    def __str__(self) -> str:
+        return f"{self.workspace_id} → admin {self.slack_user_id} [{self.status}]"
+
+
+class BotUserAccess(models.Model):
+    """Approved or revoked bot access for a Slack user in a workspace.
+
+    ``workspace_id`` + ``slack_user_id`` is unique — no duplicate
+    access rows for the same user in the same workspace.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    workspace_id = models.CharField(max_length=64, db_index=True)
+    slack_user_id = models.CharField(max_length=64, db_index=True)
+
+    status = models.CharField(
+        max_length=16,
+        choices=ACCESS_STATUS_CHOICES,
+        default=ACCESS_STATUS_APPROVED,
+        db_index=True,
+    )
+    permission = models.CharField(
+        max_length=16,
+        choices=PERMISSION_CHOICES,
+        default=PERMISSION_READ_ONLY,
+    )
+
+    granted_by_slack_user_id = models.CharField(max_length=64, default=SYSTEM_ACTOR)
+    granted_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "slack_bot_user_access"
+        unique_together = [("workspace_id", "slack_user_id")]
+
+    def __str__(self) -> str:
+        return f"{self.workspace_id}/{self.slack_user_id} [{self.status}]"
+
+
+class UnauthorizedAccessAttempt(models.Model):
+    """Tracks unauthorized access attempts for the future 24-hour notification.
+
+    ``workspace_id`` + ``slack_user_id`` is unique.  The
+    ``last_admin_notification_at`` field is nullable and will be used
+    in a later phase to enforce one admin DM per user per 24 hours.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    workspace_id = models.CharField(max_length=64, db_index=True)
+    slack_user_id = models.CharField(max_length=64, db_index=True)
+
+    attempt_count = models.PositiveIntegerField(default=0)
+    first_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_admin_notification_at = models.DateTimeField(null=True, blank=True)
+
+    last_source_channel_id = models.CharField(max_length=64, blank=True, default="")
+    last_message_ts = models.CharField(max_length=32, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "slack_bot_unauth_access_attempt"
+        unique_together = [("workspace_id", "slack_user_id")]
+
+    def __str__(self) -> str:
+        return f"{self.workspace_id}/{self.slack_user_id} attempts={self.attempt_count}"
+
+
+class BotAccessAuditLog(models.Model):
+    """Append-only audit log for bot access management actions.
+
+    Records are never updated or deleted in normal application logic.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    workspace_id = models.CharField(max_length=64, db_index=True)
+    target_slack_user_id = models.CharField(max_length=64, db_index=True)
+    performed_by_slack_user_id = models.CharField(max_length=64, default=SYSTEM_ACTOR)
+    action = models.CharField(
+        max_length=64,
+        choices=AUDIT_ACTION_CHOICES,
+        db_index=True,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "slack_bot_access_audit_log"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.workspace_id} {self.action} → {self.target_slack_user_id}"

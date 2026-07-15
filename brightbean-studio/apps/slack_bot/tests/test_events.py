@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import Client, override_settings
 from django.urls import reverse
 
-from apps.slack_bot.models import SlackInboundEvent
+from apps.slack_bot.models import BotUserAccess, SlackInboundEvent
 from apps.slack_bot.tests.conftest import signed_slack_headers
 
 SECRET = "test_secret"
+
+
+def _ensure_access(team_id="T123", user_id="U123"):
+    """Create BotUserAccess record for tests that expect events to be accepted."""
+    BotUserAccess.objects.get_or_create(
+        workspace_id=team_id,
+        slack_user_id=user_id,
+        defaults={"status": "APPROVED", "permission": "READ_ONLY"},
+    )
 
 
 def _post(client, body_dict, secret=SECRET, timestamp=None):
@@ -56,7 +66,10 @@ def test_url_verification_returns_challenge():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_app_mention_accepted_and_persisted():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_app_mention_accepted_and_persisted(mock_reaction):
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     client = Client()
     payload = {
         "token": "verification-token",
@@ -94,7 +107,10 @@ def test_app_mention_accepted_and_persisted():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_duplicate_event_returns_duplicate():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_duplicate_event_returns_duplicate(mock_reaction):
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     client = Client()
     payload = {
         "team_id": "T123",
@@ -184,8 +200,11 @@ def test_message_with_subtype_ignored():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_message_with_thread_ts_accepted():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_message_with_thread_ts_accepted(mock_reaction):
     """A message in a bot-started thread is accepted."""
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     # Simulate a prior bot response whose response_ts is the thread root
     SlackInboundEvent.objects.create(
         event_id="Ev_bot_root",
@@ -392,8 +411,11 @@ def test_parse_slack_payload_invalid():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_top_level_mention_replies_in_channel():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_top_level_mention_replies_in_channel(mock_reaction):
     """A top-level @bot mention has no thread_ts → reply in channel."""
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     client = Client()
     payload = {
         "team_id": "T123",
@@ -418,8 +440,11 @@ def test_top_level_mention_replies_in_channel():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_threaded_mention_replies_in_thread():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_threaded_mention_replies_in_thread(mock_reaction):
     """A @bot mention inside a thread preserves thread_ts."""
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     client = Client()
     payload = {
         "team_id": "T123",
@@ -444,8 +469,11 @@ def test_threaded_mention_replies_in_thread():
 
 @pytest.mark.django_db
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
-def test_reply_in_bot_thread_accepted():
+@patch("apps.slack_bot.views.add_processing_reaction")
+def test_reply_in_bot_thread_accepted(mock_reaction):
     """A non-mention reply in a bot-started thread is accepted."""
+    mock_reaction.return_value = MagicMock(ok=True)
+    _ensure_access()
     # Simulate a prior bot response — its response_ts is the thread root
     SlackInboundEvent.objects.create(
         event_id="Ev_bot_resp_1",

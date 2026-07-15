@@ -184,6 +184,10 @@ class TestTeamAllowlist:
 
 
 class TestChannelMapping:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_unmapped_channel_rejected(self, org, workspace, user):
         req = _make_request(channel_id="C_UNKNOWN")
         with pytest.raises(AuthorizationError) as exc:
@@ -197,6 +201,10 @@ class TestChannelMapping:
 
 
 class TestUserMapping:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_unmapped_user_rejected(
         self,
         org,
@@ -216,6 +224,10 @@ class TestUserMapping:
 
 
 class TestMembershipAndPermission:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_no_org_membership_rejected(
         self,
         org,
@@ -320,6 +332,10 @@ class TestMembershipAndPermission:
 
 
 class TestAccountScoping:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_only_connected_and_expiring_accounts_included(
         self,
         org,
@@ -373,6 +389,10 @@ class TestAccountScoping:
 
 
 class TestToolContext:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_context_is_frozen(
         self,
         org,
@@ -426,6 +446,10 @@ class TestToolContext:
 
 
 class TestWorkspaceState:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_archived_workspace_rejected(
         self,
         org,
@@ -467,6 +491,10 @@ class TestWorkspaceState:
 
 
 class TestFailClosed:
+    @pytest.fixture(autouse=True)
+    def _allow_team(self, settings):
+        settings.SLACK_ALLOWED_TEAM_ID = "T0001"
+
     def test_no_mappings_at_all_rejected(self):
         """No channel or user mappings exist in the DB."""
         req = _make_request()

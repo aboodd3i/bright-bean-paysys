@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import Client, override_settings
@@ -25,7 +25,7 @@ from apps.slack_bot.constants import (
     STATUS_IGNORED,
     STATUS_RESPONDED,
 )
-from apps.slack_bot.models import SlackInboundEvent
+from apps.slack_bot.models import BotUserAccess, SlackInboundEvent
 from apps.slack_bot.tasks import (
     RESULT_DELIVERED,
     RESULT_IGNORED,
@@ -130,6 +130,15 @@ def _url_verify_payload():
     return {"type": "url_verification", "challenge": "challenge_xyz"}
 
 
+def _ensure_access(team_id="T123", user_id="U123"):
+    """Create BotUserAccess record for tests that expect events to be accepted."""
+    BotUserAccess.objects.get_or_create(
+        workspace_id=team_id,
+        slack_user_id=user_id,
+        defaults={"status": "APPROVED", "permission": "READ_ONLY"},
+    )
+
+
 def _create_event(event_id="Ev_proc_1", message_text="<@B123> hello",
                   thread_ts="1720000000.000100"):
     return SlackInboundEvent.objects.create(
@@ -163,8 +172,11 @@ def _fake_delivery(response_ts="1720000001.000200"):
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
 def test_e2e_valid_mention_enqueues_once():
     """A valid signed app_mention is persisted and enqueued exactly once."""
+    _ensure_access()
     client = Client()
-    with patch("apps.slack_bot.views.enqueue_inbound_event") as mock_enqueue:
+    with patch("apps.slack_bot.views.enqueue_inbound_event") as mock_enqueue, \
+         patch("apps.slack_bot.views.add_processing_reaction") as mock_reaction:
+        mock_reaction.return_value = MagicMock(ok=True)
         response = _post(client, _mention_payload())
     assert response.status_code == 200
     assert response.json()["status"] == "received"
@@ -176,8 +188,11 @@ def test_e2e_valid_mention_enqueues_once():
 @override_settings(SLACK_SIGNING_SECRET=SECRET)
 def test_e2e_duplicate_does_not_enqueue():
     """A duplicate event_id must not trigger a second enqueue."""
+    _ensure_access()
     client = Client()
-    with patch("apps.slack_bot.views.enqueue_inbound_event") as mock_enqueue:
+    with patch("apps.slack_bot.views.enqueue_inbound_event") as mock_enqueue, \
+         patch("apps.slack_bot.views.add_processing_reaction") as mock_reaction:
+        mock_reaction.return_value = MagicMock(ok=True)
         _post(client, _mention_payload())
         assert mock_enqueue.call_count == 1
         response = _post(client, _mention_payload())
@@ -250,7 +265,7 @@ def test_e2e_invalid_json_does_not_enqueue():
 
 @pytest.mark.django_db
 def test_e2e_greeting_full_pipeline():
-    """Greeting message → normalize → simple response delivered → RESPONDED."""
+    """Greeting message → normalize → LLM path (auth fails) → error delivered."""
     event = _create_event(event_id="Ev_e2e_greet", message_text="<@B123> hello")
     delivery = _fake_delivery()
 
@@ -258,7 +273,7 @@ def test_e2e_greeting_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "greeting"
+    assert result.response_type == "error"  # auth fails, no deterministic bypass
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
     assert len(delivery.calls) == 1
@@ -266,7 +281,7 @@ def test_e2e_greeting_full_pipeline():
 
 @pytest.mark.django_db
 def test_e2e_help_full_pipeline():
-    """Help command → normalize → simple response delivered → RESPONDED."""
+    """Help command → normalize → LLM path (auth fails) → error delivered."""
     event = _create_event(event_id="Ev_e2e_help", message_text="<@B123> help")
     delivery = _fake_delivery()
 
@@ -274,14 +289,14 @@ def test_e2e_help_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "help"
+    assert result.response_type == "error"  # auth fails, no deterministic bypass
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db
 def test_e2e_status_full_pipeline():
-    """Status command → normalize → simple response delivered → RESPONDED."""
+    """Status command → normalize → LLM path (auth fails) → error delivered."""
     event = _create_event(event_id="Ev_e2e_status", message_text="<@B123> status")
     delivery = _fake_delivery()
 
@@ -289,7 +304,7 @@ def test_e2e_status_full_pipeline():
 
     assert result.ok is True
     assert result.status == RESULT_DELIVERED
-    assert result.response_type == "status"
+    assert result.response_type == "error"  # auth fails, no deterministic bypass
     event.refresh_from_db()
     assert event.status == STATUS_RESPONDED
 
@@ -314,7 +329,7 @@ def test_e2e_analytics_query_full_pipeline():
 
 @pytest.mark.django_db
 def test_e2e_delivery_not_called_for_no_response():
-    """Greeting delivery fails → event marked FAILED."""
+    """Delivery fails: auth fails first, error delivery is best-effort."""
     event = _create_event(event_id="Ev_e2e_fail", message_text="<@B123> hello")
 
     def _bad_delivery(**kwargs):
@@ -323,17 +338,19 @@ def test_e2e_delivery_not_called_for_no_response():
 
     result = process_inbound_event(event.event_id, deliver_response=_bad_delivery)
 
-    assert result.ok is False
-    assert result.status == RESULT_FAILED
+    # Authorization fails → error delivery is best-effort → RESPONDED
+    assert result.ok is True
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"
     event.refresh_from_db()
-    assert event.status == STATUS_FAILED
+    assert event.status == STATUS_RESPONDED
 
 
 @pytest.mark.django_db
-def test_e2e_ignored_message_no_delivery():
-    """A message that normalization rejects → IGNORED, no delivery call."""
+def test_e2e_mention_only_sends_greeting():
+    """A mention-only message → LLM path (auth fails) → error delivered, not ignored."""
     event = _create_event(
-        event_id="Ev_e2e_ignored",
+        event_id="Ev_e2e_mention_only",
         message_text="<@B123> ",  # only bot mention, no meaningful text
     )
     delivery = _fake_delivery()
@@ -341,10 +358,11 @@ def test_e2e_ignored_message_no_delivery():
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_IGNORED
+    assert result.status == RESULT_DELIVERED
+    assert result.response_type == "error"  # auth fails, not deterministic greeting
     event.refresh_from_db()
-    assert event.status == STATUS_IGNORED
-    assert len(delivery.calls) == 0
+    assert event.status == STATUS_RESPONDED
+    assert len(delivery.calls) == 1
 
 
 # ===========================================================================

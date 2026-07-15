@@ -81,3 +81,62 @@ RESPONSE_TYPE_UNSUPPORTED = "unsupported"
 RESPONSE_TYPE_ERROR = "error"
 RESPONSE_TYPE_NO_RESPONSE = "no_response"
 RESPONSE_TYPE_LLM = "llm_response"
+
+# ---------------------------------------------------------------------------
+# Bot whitelisting constants (Phase 1)
+# ---------------------------------------------------------------------------
+
+# BotAdministrator status
+ADMIN_STATUS_ACTIVE = "ACTIVE"
+ADMIN_STATUS_INACTIVE = "INACTIVE"
+
+ADMIN_STATUS_CHOICES = (
+    (ADMIN_STATUS_ACTIVE, "Active"),
+    (ADMIN_STATUS_INACTIVE, "Inactive"),
+)
+
+# BotUserAccess status
+ACCESS_STATUS_APPROVED = "APPROVED"
+ACCESS_STATUS_REVOKED = "REVOKED"
+
+ACCESS_STATUS_CHOICES = (
+    (ACCESS_STATUS_APPROVED, "Approved"),
+    (ACCESS_STATUS_REVOKED, "Revoked"),
+)
+
+# BotUserAccess permission
+PERMISSION_READ_ONLY = "READ_ONLY"
+
+PERMISSION_CHOICES = (
+    (PERMISSION_READ_ONLY, "Read-only"),
+)
+
+# BotAccessAuditLog actions
+AUDIT_ADMIN_BOOTSTRAPPED = "ADMIN_BOOTSTRAPPED"
+AUDIT_ADMIN_UPDATED = "ADMIN_UPDATED"
+AUDIT_ACCESS_GRANTED = "ACCESS_GRANTED"
+AUDIT_BULK_ACCESS_GRANTED = "BULK_ACCESS_GRANTED"
+AUDIT_ACCESS_ALREADY_PRESENT = "ACCESS_ALREADY_PRESENT"
+AUDIT_ACCESS_RESTORED = "ACCESS_RESTORED"
+AUDIT_ACCESS_REVOKED = "ACCESS_REVOKED"
+AUDIT_INVALID_MEMBER_ID = "INVALID_MEMBER_ID"
+AUDIT_UNAUTHORIZED_ACCESS_ATTEMPT = "UNAUTHORIZED_ACCESS_ATTEMPT"
+AUDIT_ADMIN_NOTIFICATION_SENT = "ADMIN_NOTIFICATION_SENT"
+AUDIT_ADMIN_NOTIFICATION_SUPPRESSED = "ADMIN_NOTIFICATION_SUPPRESSED"
+
+AUDIT_ACTION_CHOICES = (
+    (AUDIT_ADMIN_BOOTSTRAPPED, "Admin bootstrapped"),
+    (AUDIT_ADMIN_UPDATED, "Admin updated"),
+    (AUDIT_ACCESS_GRANTED, "Access granted"),
+    (AUDIT_BULK_ACCESS_GRANTED, "Bulk access granted"),
+    (AUDIT_ACCESS_ALREADY_PRESENT, "Access already present"),
+    (AUDIT_ACCESS_RESTORED, "Access restored"),
+    (AUDIT_ACCESS_REVOKED, "Access revoked"),
+    (AUDIT_INVALID_MEMBER_ID, "Invalid member ID"),
+    (AUDIT_UNAUTHORIZED_ACCESS_ATTEMPT, "Unauthorized access attempt"),
+    (AUDIT_ADMIN_NOTIFICATION_SENT, "Admin notification sent"),
+    (AUDIT_ADMIN_NOTIFICATION_SUPPRESSED, "Admin notification suppressed"),
+)
+
+# System actor for bootstrap/preload operations
+SYSTEM_ACTOR = "SYSTEM"

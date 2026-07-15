@@ -53,7 +53,7 @@ class ProviderConfig:
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
 
-ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_MAX_OUTPUT_TOKENS = 2000

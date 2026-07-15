@@ -2,7 +2,15 @@
 
 from django.contrib import admin
 
-from .models import SlackChannelMapping, SlackInboundEvent, SlackUserMapping
+from .models import (
+    BotAccessAuditLog,
+    BotAdministrator,
+    BotUserAccess,
+    SlackChannelMapping,
+    SlackInboundEvent,
+    SlackUserMapping,
+    UnauthorizedAccessAttempt,
+)
 
 
 @admin.register(SlackInboundEvent)
@@ -26,3 +34,51 @@ class SlackUserMappingAdmin(admin.ModelAdmin):
     list_display = ("slack_user_id", "team_id", "user", "created_at")
     search_fields = ("slack_user_id", "team_id", "user__email")
     readonly_fields = ("id", "created_at", "updated_at")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Bot whitelisting admin registrations
+# ---------------------------------------------------------------------------
+
+
+@admin.register(BotAdministrator)
+class BotAdministratorAdmin(admin.ModelAdmin):
+    list_display = ("workspace_id", "slack_user_id", "status", "created_at")
+    search_fields = ("workspace_id", "slack_user_id")
+    list_filter = ("status",)
+    readonly_fields = ("id", "created_at", "updated_at")
+
+
+@admin.register(BotUserAccess)
+class BotUserAccessAdmin(admin.ModelAdmin):
+    list_display = (
+        "workspace_id", "slack_user_id", "status",
+        "permission", "granted_at",
+    )
+    search_fields = ("workspace_id", "slack_user_id")
+    list_filter = ("status", "permission")
+    readonly_fields = ("id", "created_at", "updated_at", "granted_at")
+
+
+@admin.register(UnauthorizedAccessAttempt)
+class UnauthorizedAccessAttemptAdmin(admin.ModelAdmin):
+    list_display = (
+        "workspace_id", "slack_user_id", "attempt_count",
+        "last_attempt_at", "last_admin_notification_at",
+    )
+    search_fields = ("workspace_id", "slack_user_id")
+    readonly_fields = ("id", "created_at", "updated_at")
+
+
+@admin.register(BotAccessAuditLog)
+class BotAccessAuditLogAdmin(admin.ModelAdmin):
+    list_display = (
+        "workspace_id", "action", "target_slack_user_id",
+        "performed_by_slack_user_id", "created_at",
+    )
+    search_fields = ("workspace_id", "target_slack_user_id")
+    list_filter = ("action", "created_at")
+    readonly_fields = (
+        "id", "workspace_id", "target_slack_user_id",
+        "performed_by_slack_user_id", "action", "metadata", "created_at",
+    )
